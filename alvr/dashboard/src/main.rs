@@ -11,8 +11,13 @@ mod data_sources_wasm;
 mod logging_backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod steamvr_launcher;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
 mod mix_req; //yunjing++
+#[cfg(target_os = "linux")]
+mod mix_req_linux;
+
+#[cfg(target_os = "linux")]
+use mix_req_linux as mix_req;
 #[cfg(not(target_arch = "wasm32"))]
 use data_sources::DataSources;
 #[cfg(target_arch = "wasm32")]

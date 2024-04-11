@@ -5,9 +5,11 @@ mod stream_socket;
 //yunjing++
 mod mix_common;
 
- //yunjing++
-#[cfg(windows)]
+//yunjing++
+#[cfg(target_os = "windows")]
 mod mix_lib;
+#[cfg(target_os = "linux")]
+mod mix_lib_linux;
 
 use alvr_common::{anyhow::Result, info};
 use alvr_session::SocketBufferSize;
@@ -22,9 +24,11 @@ pub use stream_socket::*;
  //yunjing++
 pub use mix_common::*;
 
- //yunjing++
-#[cfg(windows)]
+//yunjing++
+#[cfg(target_os = "windows")]
 pub use mix_lib::*;
+#[cfg(target_os = "linux")]
+pub use mix_lib_linux::*;
 
 pub const LOCAL_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 pub const CONTROL_PORT: u16 = 9943;

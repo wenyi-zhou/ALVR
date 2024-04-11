@@ -15,9 +15,9 @@ alvr_client_core.workspace = true
 alvr_packets.workspace = true
 alvr_session.workspace = true
 
-glow = "0.12"
-khronos-egl = { version = "=4.1", features = ["dynamic"] }
-openxr = { git = "https://github.com/zarik5/openxrs" }
+glow = "0.13"
+khronos-egl = { version = "6", features = ["dynamic"] }
+openxr = { git = "https://github.com/alvr-org/openxrs", rev = "f1f47ff" }
 # openxr = { path = "../../../../openxrs/openxr" }
 
 [target.'cfg(target_os = "android")'.dependencies]

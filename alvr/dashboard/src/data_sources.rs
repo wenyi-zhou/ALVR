@@ -1,4 +1,8 @@
-use crate::mix_req; //yunjing++
+#[cfg(target_os = "windows")]
+use crate::mix_req;
+#[cfg(target_os = "linux")]
+use crate::mix_req_linux as mix_req;
+
 use alvr_common::{debug, error, info, parking_lot::Mutex, warn, RelaxedAtomic};
 use alvr_events::{Event, EventType};
 use alvr_packets::ServerRequest;
@@ -84,7 +88,6 @@ impl DataSources {
         let port = alvr_sockets::mix_read_api_port_from_file();
         let lost_hmd_seconds = mix_req::MIX_SESSION.get_report_lost_hmd_seconds();
         let is_write_stat_to_logfile = mix_req::MIX_SESSION.get_is_write_stat_to_logfile();
-
 
         let data_source = Arc::new(Mutex::new(DataSource::Local(Box::new(server_data_manager))));
 

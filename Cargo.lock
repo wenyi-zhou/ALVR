@@ -232,9 +232,9 @@ dependencies = [
  "alvr_packets",
  "alvr_session",
  "android-activity 0.4.0",
- "glow",
+ "glow 0.13.1",
  "jni 0.21.1",
- "khronos-egl",
+ "khronos-egl 6.0.0",
  "libc",
  "ndk-context",
  "openxr",
@@ -1529,7 +1529,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_glow",
- "glow",
+ "glow 0.12.3",
  "glutin",
  "glutin-winit",
  "image",
@@ -1584,7 +1584,7 @@ checksum = "1f8c2752cdf1b0ef5fcda59a898cacabad974d4f5880e92a420b2c917022da64"
 dependencies = [
  "bytemuck",
  "egui",
- "glow",
+ "glow 0.12.3",
  "log",
  "memoffset 0.6.5",
  "wasm-bindgen",
@@ -2090,6 +2090,18 @@ name = "glow"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca0fe580e4b60a8ab24a868bc08e2f03cbcb20d3d676601fa909386713333728"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "glow"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd348e04c43b32574f2de31c8bb397d96c9fcfa1371bd4ca6d8bdc464ab121b1"
 dependencies = [
  "js-sys",
  "slotmap",
@@ -2736,6 +2748,16 @@ dependencies = [
  "libc",
  "libloading 0.7.4",
  "pkg-config",
+]
+
+[[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading 0.8.0",
 ]
 
 [[package]]
@@ -3468,10 +3490,10 @@ dependencies = [
 [[package]]
 name = "openxr"
 version = "0.17.1"
-source = "git+https://github.com/zarik5/openxrs#2f5eb99f84213e766cc205026a6e09557a3420d3"
+source = "git+https://github.com/alvr-org/openxrs?rev=f1f47ff#f1f47ff8509801bf28d44538cd4a379dc1b686cf"
 dependencies = [
  "libc",
- "libloading 0.7.4",
+ "libloading 0.8.0",
  "ndk-context",
  "openxr-sys",
 ]
@@ -3479,7 +3501,7 @@ dependencies = [
 [[package]]
 name = "openxr-sys"
 version = "0.9.3"
-source = "git+https://github.com/zarik5/openxrs#2f5eb99f84213e766cc205026a6e09557a3420d3"
+source = "git+https://github.com/alvr-org/openxrs?rev=f1f47ff#f1f47ff8509801bf28d44538cd4a379dc1b686cf"
 dependencies = [
  "libc",
 ]
@@ -5307,13 +5329,13 @@ dependencies = [
  "core-graphics-types",
  "d3d12",
  "foreign-types",
- "glow",
+ "glow 0.12.3",
  "gpu-alloc",
  "gpu-allocator",
  "gpu-descriptor",
  "hassle-rs",
  "js-sys",
- "khronos-egl",
+ "khronos-egl 4.1.0",
  "libc",
  "libloading 0.8.0",
  "log",
