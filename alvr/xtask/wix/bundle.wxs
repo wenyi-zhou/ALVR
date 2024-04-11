@@ -21,7 +21,7 @@
 
         <Chain>
             <MsiPackage
-                SourceFile="build\alvr_streamer_windows.msi"
+                SourceFile="target\wix\alvr.msi"
                 Id="alvrInstaller"
                 Compressed="yes"
                 DisplayInternalUI="yes"

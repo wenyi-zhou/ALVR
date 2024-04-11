@@ -35,7 +35,7 @@ bool FrameRender::Startup()
 	ZeroMemory(&compositionTextureDesc, sizeof(compositionTextureDesc));
 	compositionTextureDesc.Width = Settings::Instance().m_renderWidth;
 	compositionTextureDesc.Height = Settings::Instance().m_renderHeight;
-	compositionTextureDesc.Format = Settings::Instance().m_enableHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	compositionTextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 	compositionTextureDesc.MipLevels = 1;
 	compositionTextureDesc.ArraySize = 1;
 	compositionTextureDesc.SampleDesc.Count = 1;
@@ -144,18 +144,6 @@ bool FrameRender::Startup()
 	m_pD3DRender->GetContext()->IASetInputLayout(m_pVertexLayout.Get());
 
 	//
-	// Create frame render CBuffer
-	//
-	struct FrameRenderBuffer {
-		float encodingGamma;
-		float _align0;
-		float _align1;
-		float _align2;
-	};
-	FrameRenderBuffer frameRenderStruct = { (float)(1.0 / Settings::Instance().m_encodingGamma), 0.0f, 0.0f, 0.0f};
-	m_pFrameRenderCBuffer = CreateBuffer(m_pD3DRender->GetDevice(), frameRenderStruct);
-
-	//
 	// Create vertex buffer
 	//
 
@@ -237,7 +225,7 @@ bool FrameRender::Startup()
 	//
 
 	// BlendState for first layer.
-	// Some VR apps (like SteamVR Home beta) submit the texture that alpha is zero on all pixels.
+	// Some VR apps (like StreamVR Home beta) submit the texture that alpha is zero on all pixels.
 	// So we need to ignore alpha of first layer.
 	D3D11_BLEND_DESC BlendDesc;
 	ZeroMemory(&BlendDesc, sizeof(BlendDesc));
@@ -291,7 +279,7 @@ bool FrameRender::Startup()
 
 		ComPtr<ID3D11Texture2D> colorCorrectedTexture = CreateTexture(m_pD3DRender->GetDevice(),
 			Settings::Instance().m_renderWidth, Settings::Instance().m_renderHeight,
-			Settings::Instance().m_enableHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
 
 		struct ColorCorrection {
 			float renderWidth;
@@ -316,95 +304,12 @@ bool FrameRender::Startup()
 		m_pStagingTexture = colorCorrectedTexture;
 	}
 
-	enableFFE = Settings::Instance().m_enableFoveatedEncoding;
-	if (enableFFE) {
+	enableFFR = Settings::Instance().m_enableFoveatedRendering;
+	if (enableFFR) {
 		m_ffr = std::make_unique<FFR>(m_pD3DRender->GetDevice());
 		m_ffr->Initialize(m_pStagingTexture.Get());
 
 		m_pStagingTexture = m_ffr->GetOutputTexture();
-	}
-
-	if (Settings::Instance().m_enableHdr) {
-		std::vector<uint8_t> yuv420ShaderCSO(RGBTOYUV420_CSO_PTR, RGBTOYUV420_CSO_PTR + RGBTOYUV420_CSO_LEN);
-		uint32_t texWidth, texHeight;
-		GetEncodingResolution(&texWidth, &texHeight);
-
-		ComPtr<ID3D11Texture2D> yuvTexture = CreateTexture(m_pD3DRender->GetDevice(),
-			texWidth, texHeight,
-			Settings::Instance().m_use10bitEncoder ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12);
-
-		struct YUVParams {
-			float offset[4];
-			float yCoeff[4];
-			float uCoeff[4];
-			float vCoeff[4];
-
-			float renderWidth;
-			float renderHeight;
-			float _padding0;
-			float _padding1;
-		};
-
-		// Bless this page for ending my stint of plugging in random values
-		// from other projects:
-		// https://kdashg.github.io/misc/colors/from-coeffs.html
-		YUVParams paramStruct_bt2020_8bit_full = {
-			{ 0.0000000f,  0.5019608f,  0.5019608f, 0.0f}, // offset
-			{ 0.2627000f,  0.6780000f,  0.0593000f, 0.0f}, // yCoeff
-			{-0.1390825f, -0.3589567f,  0.4980392f, 0.0f}, // uCoeff
-			{ 0.4980392f, -0.4579826f, -0.0400566f, 0.0f}, // vCoeff
-			(float)texWidth, (float)texHeight, 0.0, 0.0
-		};
-
-		YUVParams paramStruct_bt2020_10bit_full = {
-			{ 0.0000000f,  0.5004888f,  0.5004888f, 0.0f}, // offset
-			{ 0.2627000f,  0.6780000f,  0.0593000f, 0.0f}, // yCoeff
-			{-0.1394936f, -0.3600177f,  0.4995112f, 0.0f}, // uCoeff
-			{ 0.4995112f, -0.4593363f, -0.0401750f, 0.0f}, // vCoeff
-			(float)texWidth, (float)texHeight, 0.0, 0.0
-		};
-
-		YUVParams paramStruct_bt2020_8bit_limited = {
-			{ 0.0627451f,  0.5019608f,  0.5019608f, 0.0f}, // offset
-			{ 0.2256129f,  0.5822824f,  0.0509282f, 0.0f}, // yCoeff
-			{-0.1226554f, -0.3165603f,  0.4392157f, 0.0f}, // uCoeff
-			{ 0.4392157f, -0.4038902f, -0.0353255f, 0.0f}, // vCoeff
-			(float)texWidth, (float)texHeight, 0.0, 0.0
-		};
-
-		YUVParams paramStruct_bt2020_10bit_limited = {
-			{ 0.0625611f,  0.5004888f,  0.5004888f, 0.0f}, // offset
-			{ 0.2249513f,  0.5805748f,  0.0507789f, 0.0f}, // yCoeff
-			{-0.1222957f, -0.3156319f,  0.4379277f, 0.0f}, // uCoeff
-			{ 0.4379277f, -0.4027058f, -0.0352219f, 0.0f}, // vCoeff
-			(float)texWidth, (float)texHeight, 0.0, 0.0
-		};
-
-		YUVParams& paramStruct = paramStruct_bt2020_8bit_full;
-		if (Settings::Instance().m_use10bitEncoder) {
-			if (Settings::Instance().m_useFullRangeEncoding) {
-				paramStruct = paramStruct_bt2020_10bit_full;
-			}
-			else {
-				paramStruct = paramStruct_bt2020_10bit_limited;
-			}
-		}
-		else {
-			if (Settings::Instance().m_useFullRangeEncoding) {
-				paramStruct = paramStruct_bt2020_8bit_full;
-			}
-			else {
-				paramStruct = paramStruct_bt2020_8bit_limited;
-			}
-		}
-
-		ComPtr<ID3D11Buffer> paramBuffer = CreateBuffer(m_pD3DRender->GetDevice(), paramStruct);
-
-		m_yuvPipeline = std::make_unique<RenderPipelineYUV>(m_pD3DRender->GetDevice());
-		m_yuvPipeline->Initialize({ m_pStagingTexture.Get() }, quadVertexShader.Get(), yuv420ShaderCSO,
-											  yuvTexture.Get(), paramBuffer.Get());
-
-		m_pStagingTexture = yuvTexture;
 	}
 
 	Debug("Staging Texture created\n");
@@ -463,6 +368,9 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 		D3D11_TEXTURE2D_DESC srcDesc;
 		textures[0]->GetDesc(&srcDesc);
 
+		Debug("RenderFrame layer=%d/%d %dx%d %d%s%s\n", i, layerCount, srcDesc.Width, srcDesc.Height, srcDesc.Format
+			, recentering ? L" (recentering)" : L"", !message.empty() ? L" (message)" : L"");
+
 		D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
 		SRVDesc.Format = srcDesc.Format;
 		SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
@@ -493,32 +401,6 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 		// We need clear depth buffer to correctly render layers.
 		m_pD3DRender->GetContext()->ClearDepthStencilView(m_pDepthStencilView.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
 
-		int inputColorAdjust = 0;
-		if (Settings::Instance().m_enableHdr) {
-			if (SRVDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || SRVDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || SRVDesc.Format == DXGI_FORMAT_B8G8R8X8_UNORM_SRGB) {
-				inputColorAdjust = 1; // do sRGB manually
-			}
-			if (Settings::Instance().m_forceHdrSrgbCorrection) {
-				inputColorAdjust = 1;
-			}
-			if (Settings::Instance().m_clampHdrExtendedRange) {
-				inputColorAdjust |= 0x10; // Clamp values to 0.0 to 1.0
-			}
-		}
-		else {
-			if (SRVDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB && SRVDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB && SRVDesc.Format != DXGI_FORMAT_B8G8R8X8_UNORM_SRGB) {
-				inputColorAdjust = 2; // undo sRGB?
-
-				if (Settings::Instance().m_forceHdrSrgbCorrection) {
-					inputColorAdjust = 0;
-				}
-			}
-
-			if (Settings::Instance().m_clampHdrExtendedRange) {
-				inputColorAdjust |= 0x10; // Clamp values to 0.0 to 1.0
-			}
-		}
-
 		//
 		// Update uv-coordinates in vertex buffer according to bounds.
 		//
@@ -526,15 +408,15 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 		SimpleVertex vertices[] =
 		{
 			// Left View
-			{ DirectX::XMFLOAT3(-1.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMin, bound[0].vMax), 0 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(0.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMax, bound[0].vMin), 0 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(0.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMax, bound[0].vMax), 0 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(-1.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMin, bound[0].vMin), 0 + (inputColorAdjust*2) },
+			{ DirectX::XMFLOAT3(-1.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMin, bound[0].vMax), 0 },
+		{ DirectX::XMFLOAT3(0.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMax, bound[0].vMin), 0 },
+		{ DirectX::XMFLOAT3(0.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMax, bound[0].vMax), 0 },
+		{ DirectX::XMFLOAT3(-1.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[0].uMin, bound[0].vMin), 0 },
 		// Right View
-		{ DirectX::XMFLOAT3(0.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMin, bound[1].vMax), 1 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(1.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMax, bound[1].vMin), 1 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(1.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMax, bound[1].vMax), 1 + (inputColorAdjust*2) },
-		{ DirectX::XMFLOAT3(0.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMin, bound[1].vMin), 1 + (inputColorAdjust*2) },
+		{ DirectX::XMFLOAT3(0.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMin, bound[1].vMax), 1 },
+		{ DirectX::XMFLOAT3(1.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMax, bound[1].vMin), 1 },
+		{ DirectX::XMFLOAT3(1.0f, -1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMax, bound[1].vMax), 1 },
+		{ DirectX::XMFLOAT3(0.0f,  1.0f, 0.5f), DirectX::XMFLOAT2(bound[1].uMin, bound[1].vMin), 1 },
 		};
 
 		// TODO: Which is better? UpdateSubresource or Map
@@ -563,7 +445,6 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 
 		m_pD3DRender->GetContext()->IASetIndexBuffer(m_pIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
 		m_pD3DRender->GetContext()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_pD3DRender->GetContext()->PSSetConstantBuffers(0, 1, m_pFrameRenderCBuffer.GetAddressOf());
 
 		//
 		// Set shaders
@@ -588,12 +469,8 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 		m_colorCorrectionPipeline->Render();
 	}
 
-	if (enableFFE) {
+	if (enableFFR) {
 		m_ffr->Render();
-	}
-
-	if (Settings::Instance().m_enableHdr) {
-		m_yuvPipeline->Render();
 	}
 
 	m_pD3DRender->GetContext()->Flush();
@@ -607,7 +484,7 @@ ComPtr<ID3D11Texture2D> FrameRender::GetTexture()
 }
 
 void FrameRender::GetEncodingResolution(uint32_t *width, uint32_t *height) {
-	if (enableFFE) {
+	if (enableFFR) {
 		m_ffr->GetOptimizedResolution(width, height);
 	}
 	else {

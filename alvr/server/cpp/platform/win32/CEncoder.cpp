@@ -18,7 +18,7 @@
 			}
 		}
 
-		void CEncoder::Initialize(std::shared_ptr<CD3DRender> d3dRender) {
+		void CEncoder::Initialize(std::shared_ptr<CD3DRender> d3dRender, std::shared_ptr<ClientConnection> listener) {
 			m_FrameRender = std::make_shared<FrameRender>(d3dRender);
 			m_FrameRender->Startup();
 			uint32_t encoderWidth, encoderHeight;
@@ -28,22 +28,10 @@
 			Exception nvencException;
 #ifdef ALVR_GPL
 			Exception swException;
-			if (Settings::Instance().m_force_sw_encoding) {
-				try {
-					Debug("Try to use VideoEncoderSW.\n");
-					m_videoEncoder = std::make_shared<VideoEncoderSW>(d3dRender, encoderWidth, encoderHeight);
-					m_videoEncoder->Initialize();
-					return;
-				}
-				catch (Exception e) {
-					swException = e;
-				}
-			}
 #endif
-			
 			try {
-				Debug("Try to use VideoEncoderAMF.\n");
-				m_videoEncoder = std::make_shared<VideoEncoderAMF>(d3dRender, encoderWidth, encoderHeight);
+				Debug("Try to use VideoEncoderVCE.\n");
+				m_videoEncoder = std::make_shared<VideoEncoderVCE>(d3dRender, listener, encoderWidth, encoderHeight);
 				m_videoEncoder->Initialize();
 				return;
 			}
@@ -52,7 +40,7 @@
 			}
 			try {
 				Debug("Try to use VideoEncoderNVENC.\n");
-				m_videoEncoder = std::make_shared<VideoEncoderNVENC>(d3dRender, encoderWidth, encoderHeight);
+				m_videoEncoder = std::make_shared<VideoEncoderNVENC>(d3dRender, listener, encoderWidth, encoderHeight);
 				m_videoEncoder->Initialize();
 				return;
 			}
@@ -62,7 +50,7 @@
 #ifdef ALVR_GPL
 			try {
 				Debug("Try to use VideoEncoderSW.\n");
-				m_videoEncoder = std::make_shared<VideoEncoderSW>(d3dRender, encoderWidth, encoderHeight);
+				m_videoEncoder = std::make_shared<VideoEncoderSW>(d3dRender, listener, encoderWidth, encoderHeight);
 				m_videoEncoder->Initialize();
 				return;
 			}
@@ -93,6 +81,8 @@
 
 			while (!m_bExiting)
 			{
+				Debug("CEncoder: Waiting for new frame...\n");
+
 				m_newFrameReady.Wait();
 				if (m_bExiting)
 					break;
@@ -116,6 +106,7 @@
 
 		void CEncoder::NewFrameReady()
 		{
+			Debug("New Frame Ready\n");
 			m_encodeFinished.Reset();
 			m_newFrameReady.Set();
 		}
@@ -135,7 +126,4 @@
 
 		void CEncoder::InsertIDR() {
 			m_scheduler.InsertIDR();
-		}
-
-		void CEncoder::CaptureFrame() {
 		}

@@ -1,33 +1,32 @@
 #include "PoseHistory.h"
 #include "Utils.h"
 #include "Logger.h"
-#include "include/openvr_math.h"
 #include <mutex>
 #include <optional>
 
-void PoseHistory::OnPoseUpdated(uint64_t targetTimestampNs, FfiDeviceMotion motion) {
+void PoseHistory::OnPoseUpdated(const TrackingInfo &info) {
 	// Put pose history buffer
 	TrackingHistoryFrame history;
-	history.targetTimestampNs = targetTimestampNs;
-	history.motion = motion;
+	history.info = info;
 
-	HmdMatrix_QuatToMat(motion.orientation.w,
-		motion.orientation.x,
-		motion.orientation.y,
-		motion.orientation.z,
+
+	HmdMatrix_QuatToMat(info.HeadPose_Pose_Orientation.w,
+		info.HeadPose_Pose_Orientation.x,
+		info.HeadPose_Pose_Orientation.y,
+		info.HeadPose_Pose_Orientation.z,
 		&history.rotationMatrix);
 
-	std::unique_lock<std::mutex> lock(m_mutex);
-	if (!m_transformIdentity) {
-		vr::HmdMatrix34_t rotation = vrmath::matMul33(m_transform, history.rotationMatrix);
-		history.rotationMatrix = rotation;
-	}
+	Debug("Rotation Matrix=(%f, %f, %f, %f) (%f, %f, %f, %f) (%f, %f, %f, %f)\n"
+		, history.rotationMatrix.m[0][0], history.rotationMatrix.m[0][1], history.rotationMatrix.m[0][2], history.rotationMatrix.m[0][3]
+		, history.rotationMatrix.m[1][0], history.rotationMatrix.m[1][1], history.rotationMatrix.m[1][2], history.rotationMatrix.m[1][3]
+		, history.rotationMatrix.m[2][0], history.rotationMatrix.m[2][1], history.rotationMatrix.m[2][2], history.rotationMatrix.m[2][3]);
 
+	std::unique_lock<std::mutex> lock(m_mutex);
 	if (m_poseBuffer.size() == 0) {
 		m_poseBuffer.push_back(history);
 	}
 	else {
-		if (m_poseBuffer.back().targetTimestampNs != targetTimestampNs) {
+		if (m_poseBuffer.back().info.targetTimestampNs != info.targetTimestampNs) {
 			// New track info
 			m_poseBuffer.push_back(history);
 		}
@@ -53,6 +52,7 @@ std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetBestPoseMatch(c
 				distance += pow(it->rotationMatrix.m[j][i] - pose.m[j][i], 2);
 			}
 		}
+		//LogDriver("diff %f %llu", distance, it->info.FrameIndex);
 		if (minDiff > distance) {
 			minIt = it;
 			minDiff = distance;
@@ -64,29 +64,13 @@ std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetBestPoseMatch(c
 	return {};
 }
 
-std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetPoseAt(uint64_t timestampNs) const
+std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetPoseAt(uint64_t client_timestamp_ns) const
 {
 	std::unique_lock<std::mutex> lock(m_mutex);
 	for (auto it = m_poseBuffer.rbegin(), end = m_poseBuffer.rend() ; it != end ; ++it)
 	{
-		if (it->targetTimestampNs == timestampNs)
+		if (it->info.targetTimestampNs == client_timestamp_ns)
 			return *it;
 	}
 	return {};
-}
-
-void PoseHistory::SetTransform(const vr::HmdMatrix34_t &transform)
-{
-	std::unique_lock<std::mutex> lock(m_mutex);
-	m_transform = transform;
-
-	for (int i = 0; i < 3; ++i) {
-		for (int j = 0; j < 3; ++j) {
-			if (transform.m[i][j] != (i == j ? 1 : 0)) {
-				m_transformIdentity = false;
-				return;
-			}
-		}
-	}
-	m_transformIdentity = true;
 }

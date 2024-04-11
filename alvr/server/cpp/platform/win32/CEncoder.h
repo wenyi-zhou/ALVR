@@ -9,11 +9,12 @@
 #include <d3d11_1.h>
 #include <wincodec.h>
 #include <wincodecsdk.h>
+#include "alvr_server/ClientConnection.h"
 #include "alvr_server/Utils.h"
 #include "FrameRender.h"
 #include "VideoEncoder.h"
 #include "VideoEncoderNVENC.h"
-#include "VideoEncoderAMF.h"
+#include "VideoEncoderVCE.h"
 #ifdef ALVR_GPL
 	#include "VideoEncoderSW.h"
 #endif
@@ -33,7 +34,7 @@
 		CEncoder();
 		~CEncoder();
 
-		void Initialize(std::shared_ptr<CD3DRender> d3dRender);
+		void Initialize(std::shared_ptr<CD3DRender> d3dRender, std::shared_ptr<ClientConnection> listener);
 
 		bool CopyToStaging(ID3D11Texture2D *pTexture[][2], vr::VRTextureBounds_t bounds[][2], int layerCount, bool recentering
 			, uint64_t presentationTime, uint64_t targetTimestampNs, const std::string& message, const std::string& debugText);
@@ -51,8 +52,6 @@
 		void OnPacketLoss();
 
 		void InsertIDR();
-
-		void CaptureFrame();
 
 	private:
 		CThreadEvent m_newFrameReady, m_encodeFinished;

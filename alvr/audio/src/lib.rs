@@ -1,198 +1,200 @@
-#[cfg(windows)]
-mod windows;
-
-#[cfg(windows)]
-pub use crate::windows::*;
-
-use alvr_common::{
-    anyhow::{self, anyhow, bail, Context, Result},
-    info,
-    once_cell::sync::Lazy,
-    parking_lot::Mutex,
-    ConnectionError, ToAny,
-};
-use alvr_session::{
-    AudioBufferingConfig, CustomAudioDeviceConfig, LinuxAudioBackend, MicrophoneDevicesConfig,
-};
+use alvr_common::{lazy_static, prelude::*};
+use alvr_session::{AudioConfig, AudioDeviceId, LinuxAudioBackend};
 use alvr_sockets::{StreamReceiver, StreamSender};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BufferSize, Device, Host, Sample, SampleFormat, StreamConfig,
+    BufferSize, Device, Sample, SampleFormat, StreamConfig,
 };
+use parking_lot::Mutex;
 use rodio::{OutputStream, Source};
+use serde::Serialize;
 use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
+    collections::VecDeque,
+    sync::{mpsc as smpsc, Arc},
     thread,
-    time::Duration,
 };
+use tokio::sync::mpsc as tmpsc;
 
-static VIRTUAL_MICROPHONE_PAIRS: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
-    [
-        ("CABLE Input", "CABLE Output"),
-        ("VoiceMeeter Input", "VoiceMeeter Output"),
-        ("VoiceMeeter Aux Input", "VoiceMeeter Aux Output"),
-        ("VoiceMeeter VAIO3 Input", "VoiceMeeter VAIO3 Output"),
-    ]
-    .into_iter()
-    .collect()
-});
+#[cfg(windows)]
+use std::ptr;
+#[cfg(windows)]
+use widestring::U16CStr;
+#[cfg(windows)]
+use winapi::{
+    shared::{winerror::FAILED, wtypes::VT_LPWSTR},
+    um::{
+        combaseapi::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL},
+        coml2api::STGM_READ,
+        endpointvolume::IAudioEndpointVolume,
+        functiondiscoverykeys_devpkey::PKEY_Device_FriendlyName,
+        mmdeviceapi::{
+            eAll, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator, MMDeviceEnumerator,
+            DEVICE_STATE_ACTIVE,
+        },
+        objbase::COINIT_MULTITHREADED,
+        propidl::{PropVariantClear, PROPVARIANT},
+        propsys::IPropertyStore,
+    },
+    Class, Interface,
+};
+#[cfg(windows)]
+use wio::com::ComPtr;
 
-fn device_from_custom_config(host: &Host, config: &CustomAudioDeviceConfig) -> Result<Device> {
-    Ok(match config {
-        CustomAudioDeviceConfig::NameSubstring(name_substring) => host
-            .devices()?
-            .find(|d| {
-                d.name()
-                    .map(|name| name.to_lowercase().contains(&name_substring.to_lowercase()))
-                    .unwrap_or(false)
-            })
-            .with_context(|| {
-                format!("Cannot find audio device which name contains \"{name_substring}\"")
-            })?,
-        CustomAudioDeviceConfig::Index(index) => host
-            .devices()?
-            .nth(*index)
-            .with_context(|| format!("Cannot find audio device at index {index}"))?,
-    })
+lazy_static! {
+    static ref VIRTUAL_MICROPHONE_PAIRS: Vec<(String, String)> = vec![
+        ("CABLE Input".into(), "CABLE Output".into()),
+        ("VoiceMeeter Input".into(), "VoiceMeeter Output".into()),
+        (
+            "VoiceMeeter Aux Input".into(),
+            "VoiceMeeter Aux Output".into()
+        ),
+        (
+            "VoiceMeeter VAIO3 Input".into(),
+            "VoiceMeeter VAIO3 Output".into()
+        ),
+    ];
 }
 
-fn microphone_pair_from_sink_name(host: &Host, sink_name: &str) -> Result<(Device, Device)> {
-    let sink = host
-        .output_devices()?
-        .find(|d| d.name().unwrap_or_default().contains(sink_name))
-        .context("VB-CABLE or Voice Meeter not found. Please install or reinstall either one")?;
+#[derive(Serialize)]
+pub struct AudioDevicesList {
+    output: Vec<String>,
+    input: Vec<String>,
+}
 
-    if let Some(source_name) = VIRTUAL_MICROPHONE_PAIRS.get(sink_name) {
-        Ok((
-            sink,
-            host.input_devices()?
-                .find(|d| {
-                    d.name()
-                        .map(|name| name.contains(source_name))
-                        .unwrap_or(false)
-                })
-                .context("Matching output microphone not found. Did you rename it?")?,
-        ))
-    } else {
-        unreachable!("Invalid argument")
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn get_devices_list(linux_backend: LinuxAudioBackend) -> StrResult<AudioDevicesList> {
+    #[cfg(target_os = "linux")]
+    let host = match linux_backend {
+        LinuxAudioBackend::Alsa => cpal::host_from_id(cpal::HostId::Alsa).unwrap(),
+        LinuxAudioBackend::Jack => cpal::host_from_id(cpal::HostId::Jack).unwrap(),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let host = cpal::default_host();
+
+    let output = trace_err!(host.output_devices())?
+        .filter_map(|d| d.name().ok())
+        .collect::<Vec<_>>();
+    let input = trace_err!(host.input_devices())?
+        .filter_map(|d| d.name().ok())
+        .collect::<Vec<_>>();
+
+    Ok(AudioDevicesList { output, input })
+}
+
+pub enum AudioDeviceType {
+    Output,
+    Input,
+
+    // for the virtual microphone devices, input and output labels are swapped
+    VirtualMicrophoneInput,
+    VirtualMicrophoneOutput { matching_input_device_name: String },
+}
+
+impl AudioDeviceType {
+    #[cfg(windows)]
+    fn is_output(&self) -> bool {
+        matches!(self, Self::Output | Self::VirtualMicrophoneInput)
     }
 }
 
-#[allow(dead_code)]
 pub struct AudioDevice {
     inner: Device,
-    is_output: bool,
+
+    #[cfg(windows)]
+    device_type: AudioDeviceType,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 impl AudioDevice {
-    pub fn new_output(
-        linux_backend: Option<LinuxAudioBackend>,
-        config: Option<&CustomAudioDeviceConfig>,
-    ) -> Result<Self> {
+    pub fn new(
+        linux_backend: LinuxAudioBackend,
+        id: AudioDeviceId,
+        device_type: AudioDeviceType,
+    ) -> StrResult<Self> {
         #[cfg(target_os = "linux")]
         let host = match linux_backend {
-            Some(LinuxAudioBackend::Alsa) => cpal::host_from_id(cpal::HostId::Alsa).unwrap(),
-            Some(LinuxAudioBackend::Jack) => cpal::host_from_id(cpal::HostId::Jack).unwrap(),
-            None => cpal::default_host(),
+            LinuxAudioBackend::Alsa => cpal::host_from_id(cpal::HostId::Alsa).unwrap(),
+            LinuxAudioBackend::Jack => cpal::host_from_id(cpal::HostId::Jack).unwrap(),
         };
         #[cfg(not(target_os = "linux"))]
         let host = cpal::default_host();
 
-        let device = match config {
-            None => host
-                .default_output_device()
-                .context("No output audio device found")?,
-            Some(config) => device_from_custom_config(&host, config)?,
-        };
-
-        Ok(Self {
-            inner: device,
-            is_output: true,
-        })
-    }
-
-    pub fn new_input(config: Option<CustomAudioDeviceConfig>) -> Result<Self> {
-        let host = cpal::default_host();
-
-        let device = match config {
-            None => host
-                .default_input_device()
-                .context("No input audio device found")?,
-            Some(config) => device_from_custom_config(&host, &config)?,
-        };
-
-        Ok(Self {
-            inner: device,
-            is_output: false,
-        })
-    }
-
-    // returns (sink, source)
-    pub fn new_virtual_microphone_pair(
-        linux_backend: Option<LinuxAudioBackend>,
-        config: MicrophoneDevicesConfig,
-    ) -> Result<(Self, Self)> {
-        #[cfg(target_os = "linux")]
-        let host = match linux_backend {
-            Some(LinuxAudioBackend::Alsa) => cpal::host_from_id(cpal::HostId::Alsa).unwrap(),
-            Some(LinuxAudioBackend::Jack) => cpal::host_from_id(cpal::HostId::Jack).unwrap(),
-            None => cpal::default_host(),
-        };
-        #[cfg(not(target_os = "linux"))]
-        let host = cpal::default_host();
-
-        let (sink, source) = match config {
-            MicrophoneDevicesConfig::Automatic => {
-                let mut pair = Err(anyhow!("No microphones found"));
-                for sink_name in VIRTUAL_MICROPHONE_PAIRS.keys() {
-                    pair = microphone_pair_from_sink_name(&host, sink_name);
-                    if pair.is_ok() {
-                        break;
+        let device = match &id {
+            AudioDeviceId::Default => match &device_type {
+                AudioDeviceType::Output => host
+                    .default_output_device()
+                    .ok_or_else(|| "No output audio device found".to_owned())?,
+                AudioDeviceType::Input => host
+                    .default_input_device()
+                    .ok_or_else(|| "No input audio device found".to_owned())?,
+                AudioDeviceType::VirtualMicrophoneInput => trace_err!(host.output_devices())?
+                    .find(|d| {
+                        if let Ok(name) = d.name() {
+                            VIRTUAL_MICROPHONE_PAIRS
+                                .iter()
+                                .any(|(input_name, _)| name.contains(input_name))
+                        } else {
+                            false
+                        }
+                    })
+                    .ok_or_else(|| {
+                        "VB-CABLE or Voice Meeter not found. Please install or reinstall either one"
+                            .to_owned()
+                    })?,
+                AudioDeviceType::VirtualMicrophoneOutput {
+                    matching_input_device_name,
+                } => {
+                    let maybe_output_name = VIRTUAL_MICROPHONE_PAIRS
+                        .iter()
+                        .find(|(input_name, _)| matching_input_device_name.contains(input_name))
+                        .map(|(_, output_name)| output_name);
+                    if let Some(output_name) = maybe_output_name {
+                        trace_err!(host.input_devices())?
+                            .find(|d| {
+                                if let Ok(name) = d.name() {
+                                    name.contains(output_name)
+                                } else {
+                                    false
+                                }
+                            })
+                            .ok_or_else(|| {
+                                "Matching output microphone not found. Did you rename it?"
+                                    .to_owned()
+                            })?
+                    } else {
+                        return fmt_e!(
+                            "Selected input microphone device is unknown. {}",
+                            "Please manually select the matching output microphone device."
+                        );
                     }
                 }
-
-                pair?
-            }
-            MicrophoneDevicesConfig::VBCable => {
-                microphone_pair_from_sink_name(&host, "CABLE Input")?
-            }
-            MicrophoneDevicesConfig::VoiceMeeter => {
-                microphone_pair_from_sink_name(&host, "VoiceMeeter Input")?
-            }
-            MicrophoneDevicesConfig::VoiceMeeterAux => {
-                microphone_pair_from_sink_name(&host, "VoiceMeeter Aux Input")?
-            }
-            MicrophoneDevicesConfig::VoiceMeeterVaio3 => {
-                microphone_pair_from_sink_name(&host, "VoiceMeeter VAIO3 Input")?
-            }
-            MicrophoneDevicesConfig::Custom { sink, source } => (
-                device_from_custom_config(&host, &sink)?,
-                device_from_custom_config(&host, &source)?,
-            ),
+            },
+            AudioDeviceId::Name(name_substring) => trace_err!(host.devices())?
+                .find(|d| {
+                    if let Ok(name) = d.name() {
+                        name.to_lowercase().contains(&name_substring.to_lowercase())
+                    } else {
+                        false
+                    }
+                })
+                .ok_or_else(|| {
+                    format!("Cannot find audio device which name contains \"{name_substring}\"")
+                })?,
+            AudioDeviceId::Index(index) => trace_err!(host.devices())?
+                .nth(*index as usize - 1)
+                .ok_or_else(|| format!("Cannot find audio device at index {index}"))?,
         };
 
-        Ok((
-            Self {
-                inner: sink,
-                is_output: true,
-            },
-            Self {
-                inner: source,
-                is_output: false,
-            },
-        ))
+        Ok(Self {
+            inner: device,
+
+            #[cfg(windows)]
+            device_type,
+        })
     }
 
-    pub fn input_sample_rate(&self) -> Result<u32> {
-        let config = self
-            .inner
-            .default_input_config()
-            // On Windows, loopback devices are not recognized as input devices. Use output config.
-            .or_else(|_| self.inner.default_output_config())?;
-
-        Ok(config.sample_rate().0)
+    pub fn name(&self) -> StrResult<String> {
+        trace_err!(self.inner.name())
     }
 }
 
@@ -204,215 +206,263 @@ pub fn is_same_device(device1: &AudioDevice, device2: &AudioDevice) -> bool {
     }
 }
 
-pub enum AudioRecordState {
-    Recording,
-    ShouldStop,
-    Err(Option<anyhow::Error>),
-}
+#[cfg(windows)]
+fn get_windows_device(device: &AudioDevice) -> StrResult<ComPtr<IMMDevice>> {
+    let device_name = trace_err!(device.inner.name())?;
 
-pub enum AudioChannel {
-    FrontLeft,
-    FrontRight,
-    Center,
-    SurroundLeft,
-    SurroundRight,
-    BackLeft,
-    BackRight,
-    Top,
-    HighFrontLeft,
-    HighFrontRight,
-    HighFrontCenter,
-    HighBackLeft,
-    HighBackRight,
-    LowFrequency,
-}
+    unsafe {
+        CoInitializeEx(ptr::null_mut(), COINIT_MULTITHREADED);
 
-macro_rules! channel_mix {
-    ( $x:expr ) => {
-        match $x {
-            AudioChannel::FrontLeft => [1.0, 0.0],
-            AudioChannel::FrontRight => [0.0, 1.0],
-            AudioChannel::Center => [0.707, 0.707],
-            AudioChannel::SurroundLeft => [0.707, 0.0],
-            AudioChannel::SurroundRight => [0.0, 0.707],
-            AudioChannel::BackLeft => [0.707, 0.0],
-            AudioChannel::BackRight => [0.0, 0.707],
-            AudioChannel::Top => [0.577, 0.577],
-            AudioChannel::HighFrontLeft => [0.707, 0.0],
-            AudioChannel::HighFrontRight => [0.0, 0.707],
-            AudioChannel::HighFrontCenter => [0.5, 0.5],
-            AudioChannel::HighBackLeft => [0.5, 0.0],
-            AudioChannel::HighBackRight => [0.0, 0.5],
-            _ => [0.0, 0.0],
-        }
-    };
-}
-
-fn downmix_channels(channels: &[AudioChannel], data: &[u8], out_channels: u16) -> Vec<u8> {
-    let mut left = 0.0;
-    let mut right = 0.0;
-
-    for i in 0..channels.len() {
-        let chan = &channels[i];
-        let [l, r] = channel_mix!(chan);
-        let val = i16::from_ne_bytes([data[i * 2], data[i * 2 + 1]]).to_sample::<f32>();
-        left += val * l;
-        right += val * r;
-    }
-
-    if out_channels == 1 {
-        let bytes = ((left + right) / 2.0).to_sample::<i16>().to_ne_bytes();
-        vec![bytes[0], bytes[1]]
-    } else {
-        let left_bytes = left.to_sample::<i16>().to_ne_bytes();
-        let right_bytes = right.to_sample::<i16>().to_ne_bytes();
-        vec![left_bytes[0], left_bytes[1], right_bytes[0], right_bytes[1]]
-    }
-}
-
-fn downmix_audio(data: Vec<u8>, in_channels: u16, out_channels: u16) -> Vec<u8> {
-    if in_channels == out_channels {
-        data
-    } else if in_channels == 1 && out_channels == 2 {
-        data.chunks_exact(2)
-            .flat_map(|c| vec![c[0], c[1], c[0], c[1]])
-            .collect()
-    } else {
-        let channels = match in_channels {
-            2 => vec![AudioChannel::FrontLeft, AudioChannel::FrontRight],
-            3 => vec![
-                AudioChannel::FrontLeft,
-                AudioChannel::FrontRight,
-                AudioChannel::LowFrequency,
-            ],
-            4 => vec![
-                AudioChannel::FrontLeft,
-                AudioChannel::FrontRight,
-                AudioChannel::BackLeft,
-                AudioChannel::BackRight,
-            ],
-            6 => vec![
-                AudioChannel::FrontRight,
-                AudioChannel::Center,
-                AudioChannel::LowFrequency,
-                AudioChannel::SurroundLeft, // Sometimes actually BackLeft, has same level so it's okay
-                AudioChannel::SurroundRight, // Sometimes actually BackRight, has same level so it's okay
-            ],
-            8 => vec![
-                AudioChannel::FrontLeft,
-                AudioChannel::FrontRight,
-                AudioChannel::Center,
-                AudioChannel::LowFrequency,
-                AudioChannel::BackLeft,
-                AudioChannel::BackRight,
-                AudioChannel::SurroundLeft,
-                AudioChannel::SurroundRight,
-            ],
-            _ => unreachable!("Invalid input channel count"),
-        };
-
-        data.chunks_exact(in_channels as usize * 2)
-            .flat_map(|c| downmix_channels(&channels, c, out_channels))
-            .collect()
-    }
-}
-
-#[allow(unused_variables)]
-pub fn record_audio_blocking(
-    is_running: Arc<dyn Fn() -> bool + Send + Sync>,
-    mut sender: StreamSender<()>,
-    device: &AudioDevice,
-    channels_count: u16,
-    mute: bool,
-) -> Result<()> {
-    let config = device
-        .inner
-        .default_input_config()
-        // On Windows, loopback devices are not recognized as input devices. Use output config.
-        .or_else(|_| device.inner.default_output_config())?;
-
-    if config.channels() > 8 {
-        bail!(
-            "Audio devices with more than 8 channels are not supported. {}",
-            "Please turn off surround audio."
+        let mut mm_device_enumerator_ptr: *mut IMMDeviceEnumerator = ptr::null_mut();
+        let hr = CoCreateInstance(
+            &MMDeviceEnumerator::uuidof(),
+            ptr::null_mut(),
+            CLSCTX_ALL,
+            &IMMDeviceEnumerator::uuidof(),
+            &mut mm_device_enumerator_ptr as *mut _ as _,
         );
-    } else if config.channels() == 5 || config.channels() == 7 {
-        bail!(
-            "Audio devices with {} channels are not supported.",
-            config.channels()
+        if FAILED(hr) {
+            return fmt_e!("CoCreateInstance(IMMDeviceEnumerator) failed: hr = 0x{hr:08x}",);
+        }
+        let mm_device_enumerator = ComPtr::from_raw(mm_device_enumerator_ptr);
+
+        let mut mm_device_collection_ptr: *mut IMMDeviceCollection = ptr::null_mut();
+        let hr = mm_device_enumerator.EnumAudioEndpoints(
+            eAll,
+            DEVICE_STATE_ACTIVE,
+            &mut mm_device_collection_ptr as _,
+        );
+        if FAILED(hr) {
+            return fmt_e!("IMMDeviceEnumerator::EnumAudioEndpoints failed: hr = 0x{hr:08x}",);
+        }
+        let mm_device_collection = ComPtr::from_raw(mm_device_collection_ptr);
+
+        // GetCount has a wrong signature (*const parameter instead of *mut). Count needs to be a
+        // mutable variable even if not enforced.
+        #[allow(unused_mut)]
+        let mut count = 0;
+        let hr = mm_device_collection.GetCount(&count);
+        if FAILED(hr) {
+            return fmt_e!("IMMDeviceCollection::GetCount failed: hr = 0x{hr:08x}");
+        }
+
+        for i in 0..count {
+            let mut mm_device_ptr: *mut IMMDevice = ptr::null_mut();
+            let hr = mm_device_collection.Item(i as _, &mut mm_device_ptr as _);
+            if FAILED(hr) {
+                return fmt_e!("IMMDeviceCollection::Item failed: hr = 0x{hr:08x}");
+            }
+            let mm_device = ComPtr::from_raw(mm_device_ptr);
+
+            let mut property_store_ptr: *mut IPropertyStore = ptr::null_mut();
+            let hr = mm_device.OpenPropertyStore(STGM_READ, &mut property_store_ptr as _);
+            if FAILED(hr) {
+                return fmt_e!("IMMDevice::OpenPropertyStore failed: hr = 0x{hr:08x}");
+            }
+            let property_store = ComPtr::from_raw(property_store_ptr);
+
+            let mut prop_variant = PROPVARIANT::default();
+            let hr = property_store.GetValue(&PKEY_Device_FriendlyName, &mut prop_variant);
+            if FAILED(hr) {
+                return fmt_e!("IPropertyStore::GetValue failed: hr = 0x{hr:08x}");
+            }
+            if prop_variant.vt as u32 != VT_LPWSTR {
+                return fmt_e!(
+                    "PKEY_Device_FriendlyName variant type is {} - expected VT_LPWSTR",
+                    prop_variant.vt
+                );
+            }
+            let utf16_name = U16CStr::from_ptr_str(*prop_variant.data.pwszVal());
+            let hr = PropVariantClear(&mut prop_variant);
+            if FAILED(hr) {
+                return fmt_e!("PropVariantClear failed: hr = 0x{hr:08x}");
+            }
+
+            let mm_device_name = trace_err!(utf16_name.to_string())?;
+            if mm_device_name == device_name {
+                return Ok(mm_device);
+            }
+        }
+
+        fmt_e!("No device found with specified name")
+    }
+}
+
+#[cfg(windows)]
+pub fn get_windows_device_id(device: &AudioDevice) -> StrResult<String> {
+    unsafe {
+        let mm_device = get_windows_device(device)?;
+
+        let mut id_str_ptr = ptr::null_mut();
+        mm_device.GetId(&mut id_str_ptr);
+        let id_str = trace_err!(U16CStr::from_ptr_str(id_str_ptr).to_string())?;
+        CoTaskMemFree(id_str_ptr as _);
+
+        Ok(id_str)
+    }
+}
+
+// device must be an output device
+#[cfg(windows)]
+fn set_mute_windows_device(device: &AudioDevice, mute: bool) -> StrResult {
+    unsafe {
+        let mm_device = get_windows_device(device)?;
+
+        let mut endpoint_volume_ptr: *mut IAudioEndpointVolume = ptr::null_mut();
+        let hr = mm_device.Activate(
+            &IAudioEndpointVolume::uuidof(),
+            CLSCTX_ALL,
+            ptr::null_mut(),
+            &mut endpoint_volume_ptr as *mut _ as _,
+        );
+        if FAILED(hr) {
+            return fmt_e!(
+                "IMMDevice::Activate() for IAudioEndpointVolume failed: hr = 0x{hr:08x}"
+            );
+        }
+        let endpoint_volume = ComPtr::from_raw(endpoint_volume_ptr);
+
+        let hr = endpoint_volume.SetMute(mute as _, ptr::null_mut());
+        if FAILED(hr) {
+            return fmt_e!("Failed to mute audio device: hr = 0x{hr:08x}");
+        }
+    }
+
+    Ok(())
+}
+
+pub fn get_sample_rate(device: &AudioDevice) -> StrResult<u32> {
+    let maybe_config_range = trace_err!(device.inner.supported_output_configs())?.next();
+    let config = if let Some(config) = maybe_config_range {
+        config
+    } else {
+        trace_none!(trace_err!(device.inner.supported_input_configs())?.next())?
+    };
+
+    // Assumption: device is in shared mode: this means that there is one and fixed sample rate,
+    // format and channel count
+    Ok(config.min_sample_rate().0)
+}
+
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub async fn record_audio_loop(
+    device: AudioDevice,
+    channels_count: u16,
+    sample_rate: u32,
+    mute: bool,
+    mut sender: StreamSender<()>,
+) -> StrResult {
+    let maybe_config_range = trace_err!(device.inner.supported_output_configs())?.next();
+    let config = if let Some(config) = maybe_config_range {
+        config
+    } else {
+        trace_none!(trace_err!(device.inner.supported_input_configs())?.next())?
+    };
+
+    if sample_rate != config.min_sample_rate().0 {
+        return fmt_e!("Sample rate not supported");
+    }
+
+    if config.channels() > 2 {
+        return fmt_e!(
+            "Audio devices with more than 2 channels are not supported. {}",
+            "Please turn off surround audio."
         );
     }
 
     let stream_config = StreamConfig {
         channels: config.channels(),
-        sample_rate: config.sample_rate(),
+        sample_rate: config.min_sample_rate(),
         buffer_size: BufferSize::Default,
     };
 
-    let state = Arc::new(Mutex::new(AudioRecordState::Recording));
+    // data_sender/receiver is the bridge between tokio and std thread
+    let (data_sender, mut data_receiver) = tmpsc::unbounded_channel::<StrResult<Vec<_>>>();
+    let (_shutdown_notifier, shutdown_receiver) = smpsc::channel::<()>();
 
-    let stream = device.inner.build_input_stream_raw(
-        &stream_config,
-        config.sample_format(),
-        {
-            let state = Arc::clone(&state);
-            let is_running = Arc::clone(&is_running);
-            move |data, _| {
-                let data = if config.sample_format() == SampleFormat::F32 {
-                    data.bytes()
-                        .chunks_exact(4)
-                        .flat_map(|b| {
-                            f32::from_ne_bytes([b[0], b[1], b[2], b[3]])
-                                .to_sample::<i16>()
-                                .to_ne_bytes()
-                                .to_vec()
-                        })
-                        .collect()
-                } else {
-                    data.bytes().to_vec()
-                };
-
-                let data = downmix_audio(data, config.channels(), channels_count);
-
-                if is_running() {
-                    let mut buffer = sender.get_buffer(&()).unwrap();
-                    buffer.get_range_mut(0, data.len()).copy_from_slice(&data);
-                    sender.send(buffer).ok();
-                } else {
-                    *state.lock() = AudioRecordState::ShouldStop;
-                }
+    let thread_callback = {
+        let data_sender = data_sender.clone();
+        move || {
+            #[cfg(windows)]
+            if mute && device.device_type.is_output() {
+                set_mute_windows_device(&device, true).ok();
             }
-        },
-        {
-            let state = Arc::clone(&state);
-            move |e| *state.lock() = AudioRecordState::Err(Some(e.into()))
-        },
-        None,
-    )?;
 
-    #[cfg(windows)]
-    if mute && device.is_output {
-        crate::windows::set_mute_windows_device(device, true).ok();
-    }
+            let stream = trace_err!(device.inner.build_input_stream_raw(
+                &stream_config,
+                config.sample_format(),
+                {
+                    let data_sender = data_sender.clone();
+                    move |data, _| {
+                        let data = if config.sample_format() == SampleFormat::F32 {
+                            data.bytes()
+                                .chunks_exact(4)
+                                .flat_map(|b| {
+                                    f32::from_ne_bytes([b[0], b[1], b[2], b[3]])
+                                        .to_i16()
+                                        .to_ne_bytes()
+                                        .to_vec()
+                                })
+                                .collect()
+                        } else {
+                            data.bytes().to_vec()
+                        };
 
-    let mut res = stream.play().to_any();
+                        let data = if config.channels() == 1 && channels_count == 2 {
+                            data.chunks_exact(2)
+                                .flat_map(|c| vec![c[0], c[1], c[0], c[1]])
+                                .collect()
+                        } else if config.channels() == 2 && channels_count == 1 {
+                            data.chunks_exact(4)
+                                .flat_map(|c| vec![c[0], c[1]])
+                                .collect()
+                        } else {
+                            data
+                        };
 
-    if res.is_ok() {
-        while matches!(*state.lock(), AudioRecordState::Recording) && is_running() {
-            thread::sleep(Duration::from_millis(500))
+                        data_sender.send(Ok(data)).ok();
+                    }
+                },
+                {
+                    let data_sender = data_sender.clone();
+                    move |e| {
+                        data_sender
+                            .send(fmt_e!("Error while recording audio: {e}"))
+                            .ok();
+                    }
+                }
+            ))?;
+
+            trace_err!(stream.play())?;
+
+            shutdown_receiver.recv().ok();
+
+            #[cfg(windows)]
+            if mute && device.device_type.is_output() {
+                set_mute_windows_device(&device, false).ok();
+            }
+
+            Ok(vec![])
         }
+    };
 
-        if let AudioRecordState::Err(e) = &mut *state.lock() {
-            res = Err(e.take().unwrap());
+    // use a std thread to store the stream object. The stream object must be destroyed on the same
+    // thread of creation.
+    thread::spawn(move || {
+        let res = thread_callback();
+        if res.is_err() {
+            data_sender.send(res).ok();
         }
+    });
+
+    while let Some(maybe_data) = data_receiver.recv().await {
+        let data = maybe_data?;
+        let mut buffer = sender.new_buffer(&(), data.len())?;
+        buffer.get_mut().extend(data);
+        sender.send_buffer(buffer).await.ok();
     }
 
-    #[cfg(windows)]
-    if mute && device.is_output {
-        set_mute_windows_device(device, false).ok();
-    }
-
-    res
+    Ok(())
 }
 
 // Audio callback. This is designed to be as less complex as possible. Still, when needed, this
@@ -449,31 +499,25 @@ pub fn get_next_frame_batch(
 // underflow, overflow, packet loss). In case the computation takes too much time, the audio
 // callback will gracefully handle an interruption, and the callback timing and sound wave
 // continuity will not be affected.
-pub fn receive_samples_loop(
-    is_running: impl Fn() -> bool,
-    receiver: &mut StreamReceiver<()>,
+pub async fn receive_samples_loop(
+    mut receiver: StreamReceiver<()>,
     sample_buffer: Arc<Mutex<VecDeque<f32>>>,
     channels_count: usize,
     batch_frames_count: usize,
     average_buffer_frames_count: usize,
-) -> Result<()> {
+) -> StrResult {
     let mut recovery_sample_buffer = vec![];
-    while is_running() {
-        let data = match receiver.recv(Duration::from_millis(500)) {
-            Ok(data) => data,
-            Err(ConnectionError::TryAgain(_)) => continue,
-            Err(ConnectionError::Other(e)) => return Err(e),
-        };
-        let (_, packet) = data.get()?;
-
+    loop {
+        let packet = receiver.recv().await?;
         let new_samples = packet
+            .buffer
             .chunks_exact(2)
-            .map(|c| i16::from_ne_bytes([c[0], c[1]]).to_sample::<f32>())
+            .map(|c| i16::from_ne_bytes([c[0], c[1]]).to_f32())
             .collect::<Vec<_>>();
 
         let mut sample_buffer_ref = sample_buffer.lock();
 
-        if data.had_packet_loss() {
+        if packet.had_packet_loss {
             info!("Audio packet loss!");
 
             if sample_buffer_ref.len() / channels_count < batch_frames_count {
@@ -490,7 +534,7 @@ pub fn receive_samples_loop(
             recovery_sample_buffer.extend(sample_buffer_ref.drain(..));
         }
 
-        if sample_buffer_ref.len() == 0 || data.had_packet_loss() {
+        if sample_buffer_ref.len() == 0 || packet.had_packet_loss {
             recovery_sample_buffer.extend(&new_samples);
 
             if recovery_sample_buffer.len() / channels_count
@@ -504,7 +548,7 @@ pub fn receive_samples_loop(
                     }
                 }
 
-                if data.had_packet_loss()
+                if packet.had_packet_loss
                     && sample_buffer_ref.len() / channels_count == batch_frames_count
                 {
                     // Add a fade-out to make a cross-fade.
@@ -546,8 +590,6 @@ pub fn receive_samples_loop(
             }
         }
     }
-
-    Ok(())
 }
 
 struct StreamingSource {
@@ -584,7 +626,7 @@ impl Iterator for StreamingSource {
     fn next(&mut self) -> Option<f32> {
         if self.current_batch_cursor == 0 {
             self.current_batch = get_next_frame_batch(
-                &mut self.sample_buffer.lock(),
+                &mut *self.sample_buffer.lock(),
                 self.channels_count,
                 self.batch_frames_count,
             );
@@ -599,14 +641,13 @@ impl Iterator for StreamingSource {
     }
 }
 
-pub fn play_audio_loop(
-    is_running: impl Fn() -> bool,
-    device: &AudioDevice,
+pub async fn play_audio_loop(
+    device: AudioDevice,
     channels_count: u16,
     sample_rate: u32,
-    config: AudioBufferingConfig,
-    receiver: &mut StreamReceiver<()>,
-) -> Result<()> {
+    config: AudioConfig,
+    receiver: StreamReceiver<()>,
+) -> StrResult {
     // Size of a chunk of frames. It corresponds to the duration if a fade-in/out in frames.
     let batch_frames_count = sample_rate as usize * config.batch_ms as usize / 1000;
 
@@ -616,26 +657,34 @@ pub fn play_audio_loop(
 
     let sample_buffer = Arc::new(Mutex::new(VecDeque::new()));
 
-    let (_stream, handle) = OutputStream::try_from_device(&device.inner)?;
+    // Store the stream in a thread (because !Send)
+    let (_shutdown_notifier, shutdown_receiver) = smpsc::channel::<()>();
+    thread::spawn({
+        let sample_buffer = Arc::clone(&sample_buffer);
+        move || -> StrResult {
+            let (_stream, handle) = trace_err!(OutputStream::try_from_device(&device.inner))?;
 
-    handle.play_raw(StreamingSource {
-        sample_buffer: Arc::clone(&sample_buffer),
-        current_batch: vec![],
-        current_batch_cursor: 0,
-        channels_count: channels_count as _,
-        sample_rate,
-        batch_frames_count,
-    })?;
+            let source = StreamingSource {
+                sample_buffer,
+                current_batch: vec![],
+                current_batch_cursor: 0,
+                channels_count: channels_count as _,
+                sample_rate,
+                batch_frames_count,
+            };
+            trace_err!(handle.play_raw(source))?;
+
+            shutdown_receiver.recv().ok();
+            Ok(())
+        }
+    });
 
     receive_samples_loop(
-        is_running,
         receiver,
         sample_buffer,
         channels_count as _,
         batch_frames_count,
         average_buffer_frames_count,
     )
-    .ok();
-
-    Ok(())
+    .await
 }

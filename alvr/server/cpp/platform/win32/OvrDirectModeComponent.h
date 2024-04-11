@@ -1,12 +1,11 @@
 #pragma once
 #include "openvr_driver.h"
+#include "alvr_server/ClientConnection.h"
 #include "alvr_server/Utils.h"
 #include "CEncoder.h"
 #include "alvr_server/PoseHistory.h"
 
 #include "alvr_server/Settings.h"
-
-#include <mutex>
 
 
 class OvrDirectModeComponent : public vr::IVRDriverDirectModeComponent
@@ -34,15 +33,13 @@ public:
 
 	/** Submits queued layers for display. */
 	virtual void Present(vr::SharedTextureHandle_t syncTexture);
-	
-	/** Called after Present to allow driver to take more time until vsync after they've successfully acquired the sync texture in Present.*/
-	virtual void PostPresent();
 
 	void CopyTexture(uint32_t layerCount);
 
 private:
 	std::shared_ptr<CD3DRender> m_pD3DRender;
 	std::shared_ptr<CEncoder> m_pEncoder;
+	std::shared_ptr<ClientConnection> m_Listener;
 	std::shared_ptr<PoseHistory> m_poseHistory;
 
 	// Resource for each process
@@ -60,6 +57,4 @@ private:
 	vr::HmdQuaternion_t m_framePoseRotation;
 	uint64_t m_targetTimestampNs;
 	uint64_t m_prevTargetTimestampNs;
-
-	std::mutex m_presentMutex;
 };

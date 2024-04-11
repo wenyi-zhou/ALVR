@@ -1,30 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["alvr/*"]
-
-[workspace.package]
-version = "21.0.0-dev00"
-edition = "2021"
-rust-version = "1.70"
-authors = ["alvr-org"]
-license = "MIT"
-
-[workspace.dependencies]
-alvr_audio = { path = "alvr/audio" }
-alvr_client_core = { path = "alvr/client_core" }
-alvr_common = { path = "alvr/common" }
-alvr_events = { path = "alvr/events" }
-alvr_filesystem = { path = "alvr/filesystem" }
-alvr_packets = { path = "alvr/packets" }
-alvr_server_io = { path = "alvr/server_io" }
-alvr_session = { path = "alvr/session" }
-alvr_sockets = { path = "alvr/sockets" }
-alvr_gui_common = { path = "alvr/gui_common" }
-
-[profile.release]
-debug = "limited"
-strip = false
-
-[profile.distribution]
-inherits = "release"
-lto = true
+members = [
+    "alvr/settings-schema-derive",
+    "alvr/settings-schema",
+    "alvr/filesystem",
+    "alvr/common",
+    "alvr/commands",
+    "alvr/session",
+    "alvr/sockets",
+    "alvr/audio",
+    "alvr/client",
+    "alvr/server",
+    "alvr/launcher",
+    "alvr/vrcompositor-wrapper",
+    "alvr/vulkan-layer",
+    "alvr/xtask",
+    # "alvr/experiments/client",     # needed for bug in cargo-subcommand
+    # "alvr/experiments/*",
+]

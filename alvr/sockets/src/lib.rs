@@ -1,92 +1,74 @@
-mod backend;
 mod control_socket;
+mod packets;
 mod stream_socket;
 
-use alvr_common::{anyhow::Result, info};
-use alvr_session::{DscpTos, SocketBufferSize};
-use socket2::Socket;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    time::Duration,
-};
+use alvr_common::prelude::*;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr};
 
 pub use control_socket::*;
+pub use packets::*;
 pub use stream_socket::*;
 
 pub const LOCAL_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 pub const CONTROL_PORT: u16 = 9943;
-pub const HANDSHAKE_PACKET_SIZE_BYTES: usize = 56; // this may change in future protocols
-pub const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
-pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const MAX_HANDSHAKE_PACKET_SIZE_BYTES: usize = 4_000;
 
-pub const MDNS_SERVICE_TYPE: &str = "_alvr._tcp.local.";
-pub const MDNS_PROTOCOL_KEY: &str = "protocol";
+type Ldc = tokio_util::codec::LengthDelimitedCodec;
 
-fn set_socket_buffers(
-    socket: &socket2::Socket,
-    send_buffer_bytes: SocketBufferSize,
-    recv_buffer_bytes: SocketBufferSize,
-) -> Result<()> {
-    info!(
-        "Initial socket buffer size: send: {}B, recv: {}B",
-        socket.send_buffer_size()?,
-        socket.recv_buffer_size()?
-    );
-
-    {
-        let maybe_size = match send_buffer_bytes {
-            SocketBufferSize::Default => None,
-            SocketBufferSize::Maximum => Some(u32::MAX),
-            SocketBufferSize::Custom(size) => Some(size),
-        };
-
-        if let Some(size) = maybe_size {
-            if let Err(e) = socket.set_send_buffer_size(size as usize) {
-                info!("Error setting socket send buffer: {e}");
-            } else {
-                info!(
-                    "Set socket send buffer succeeded: {}",
-                    socket.send_buffer_size()?
-                );
-            }
-        }
-    }
-
-    {
-        let maybe_size = match recv_buffer_bytes {
-            SocketBufferSize::Default => None,
-            SocketBufferSize::Maximum => Some(u32::MAX),
-            SocketBufferSize::Custom(size) => Some(size),
-        };
-
-        if let Some(size) = maybe_size {
-            if let Err(e) = socket.set_recv_buffer_size(size as usize) {
-                info!("Error setting socket recv buffer: {e}");
-            } else {
-                info!(
-                    "Set socket recv buffer succeeded: {}",
-                    socket.recv_buffer_size()?
-                );
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PublicIdentity {
+    pub hostname: String,
+    pub certificate_pem: Option<String>,
 }
 
-fn set_dscp(socket: &Socket, dscp: Option<DscpTos>) {
-    // https://en.wikipedia.org/wiki/Differentiated_services
-    if let Some(dscp) = dscp {
-        let tos = match dscp {
-            DscpTos::BestEffort => 0,
-            DscpTos::ClassSelector(precedence) => precedence << 3,
-            DscpTos::AssuredForwarding {
-                class,
-                drop_probability,
-            } => (class << 3) | drop_probability as u8,
-            DscpTos::ExpeditedForwarding => 0b101110,
-        };
+pub struct PrivateIdentity {
+    pub hostname: String,
+    pub certificate_pem: String,
+    pub key_pem: String,
+}
 
-        socket.set_tos((tos << 2) as u32).ok();
+pub fn create_identity(hostname: Option<String>) -> StrResult<PrivateIdentity> {
+    let hostname = hostname.unwrap_or(format!(
+        "{}{}{}{}.client.alvr",
+        rand::thread_rng().gen_range(0..10),
+        rand::thread_rng().gen_range(0..10),
+        rand::thread_rng().gen_range(0..10),
+        rand::thread_rng().gen_range(0..10),
+    ));
+
+    let certificate = trace_err!(rcgen::generate_simple_self_signed([hostname.clone()]))?;
+
+    Ok(PrivateIdentity {
+        hostname,
+        certificate_pem: trace_err!(certificate.serialize_pem())?,
+        key_pem: certificate.serialize_private_key_pem(),
+    })
+}
+
+mod util {
+    use alvr_common::prelude::*;
+    use std::future::Future;
+    use tokio::{sync::oneshot, task};
+
+    // Tokio tasks are not cancelable. This function awaits a cancelable task.
+    pub async fn spawn_cancelable(
+        future: impl Future<Output = StrResult> + Send + 'static,
+    ) -> StrResult {
+        // this channel is actually never used. cancel_receiver will be notified when _cancel_sender
+        // is dropped
+        let (_cancel_sender, cancel_receiver) = oneshot::channel::<()>();
+
+        trace_err!(
+            task::spawn(async {
+                tokio::select! {
+                    res = future => res,
+                    _ = cancel_receiver => Ok(()),
+                }
+            })
+            .await
+        )?
     }
 }
+pub use util::*;

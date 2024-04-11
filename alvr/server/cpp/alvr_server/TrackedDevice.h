@@ -6,13 +6,11 @@
 
 class TrackedDevice {
   public:
-    uint64_t device_id;
+    uint64_t device_path;
     vr::TrackedDeviceIndex_t object_id = vr::k_unTrackedDeviceIndexInvalid;
     vr::PropertyContainerHandle_t prop_container = vr::k_ulInvalidPropertyContainer;
 
-    TrackedDevice(uint64_t device_id) : device_id(device_id) {}
+    void set_prop(OpenvrProperty prop);
 
-    std::string get_serial_number();
-
-    void set_prop(FfiOpenvrProperty prop);
+    TrackedDevice(uint64_t device_path) : device_path(device_path) {}
 };

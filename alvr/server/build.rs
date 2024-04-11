@@ -1,48 +1,91 @@
+use alvr_filesystem as afs;
+#[cfg(target_os = "linux")]
+use pkg_config;
 use std::{env, path::PathBuf};
 
-fn get_ffmpeg_path() -> PathBuf {
-    let ffmpeg_path = alvr_filesystem::deps_dir()
-        .join(if cfg!(target_os = "linux") {
-            "linux"
-        } else {
-            "windows"
-        })
-        .join("ffmpeg");
+// this code must be executed BEFORE the actual cpp build when using bundled ffmpeg,
+// as it adds definitions and include flags
+// but AFTER the build in other cases because linker flags must appear after.
+#[cfg(target_os = "linux")]
+fn do_ffmpeg_pkg_config(build: &mut cc::Build) {
+    let ffmpeg_path = env::var("CARGO_MANIFEST_DIR").unwrap() + "/../../deps/linux/FFmpeg-n4.4/";
 
-    if cfg!(target_os = "linux") {
-        ffmpeg_path.join("alvr_build")
-    } else {
-        ffmpeg_path
+    #[cfg(feature = "bundled_ffmpeg")]
+    {
+        for lib in vec!["libavutil", "libavfilter", "libavcodec", "libswscale"] {
+            let path = ffmpeg_path.clone() + lib;
+            env::set_var(
+                "PKG_CONFIG_PATH",
+                env::var("PKG_CONFIG_PATH").map_or(path.clone(), |old| format!("{path}:{old}")),
+            );
+        }
+    }
+
+    let pkg = pkg_config::Config::new()
+        .cargo_metadata(cfg!(not(feature = "bundled_ffmpeg")))
+        .to_owned();
+    let avutil = pkg.probe("libavutil").unwrap();
+    let avfilter = pkg.probe("libavfilter").unwrap();
+    let avcodec = pkg.probe("libavcodec").unwrap();
+    let swscale = pkg.probe("libswscale").unwrap();
+
+    if cfg!(feature = "bundled_ffmpeg") {
+        build
+            .define("AVCODEC_MAJOR", avcodec.version.split(".").next().unwrap())
+            .define("AVUTIL_MAJOR", avutil.version.split(".").next().unwrap())
+            .define(
+                "AVFILTER_MAJOR",
+                avfilter.version.split(".").next().unwrap(),
+            )
+            .define("SWSCALE_MAJOR", swscale.version.split(".").next().unwrap());
+
+        build.include(ffmpeg_path);
+
+        // activate dlopen for libav libraries
+        build
+            .define("LIBRARY_LOADER_AVCODEC_LOADER_H_DLOPEN", None)
+            .define("LIBRARY_LOADER_AVUTIL_LOADER_H_DLOPEN", None)
+            .define("LIBRARY_LOADER_AVFILTER_LOADER_H_DLOPEN", None)
+            .define("LIBRARY_LOADER_SWSCALE_LOADER_H_DLOPEN", None);
+
+        println!("cargo:rustc-link-lib=dl");
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "gpl"))]
-fn get_linux_x264_path() -> PathBuf {
-    alvr_filesystem::deps_dir().join("linux/x264/alvr_build")
+#[cfg(all(windows, feature = "gpl"))]
+fn do_ffmpeg_windows_config(build: &mut cc::Build) {
+    let ffmpeg_dir = afs::deps_dir()
+        .join("windows")
+        .join("ffmpeg-n5.0-latest-win64-gpl-shared-5.0");
+
+    build.include(format!("{}/include", ffmpeg_dir.to_string_lossy()));
+
+    println!(
+        "cargo:rustc-link-search=native={}/lib",
+        ffmpeg_dir.to_string_lossy()
+    );
+    println!("cargo:rustc-link-lib=avcodec");
+    println!("cargo:rustc-link-lib=avutil");
+    println!("cargo:rustc-link-lib=avfilter");
+    println!("cargo:rustc-link-lib=swscale");
 }
 
 fn main() {
-    let platform_name = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let cpp_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cpp");
 
-    let platform_subpath = match platform_name.as_str() {
-        "windows" => "cpp/platform/win32",
-        "linux" => "cpp/platform/linux",
-        "macos" => "cpp/platform/macos",
-        _ => panic!(),
-    };
+    #[cfg(windows)]
+    let platform = "cpp/platform/win32";
+    #[cfg(target_os = "linux")]
+    let platform = "cpp/platform/linux";
+    #[cfg(target_os = "macos")]
+    let platform = "cpp/platform/macos";
 
     let common_iter = walkdir::WalkDir::new("cpp")
         .into_iter()
-        .filter_entry(|entry| {
-            entry.file_name() != "tools"
-                && entry.file_name() != "platform"
-                && (platform_name != "macos" || entry.file_name() != "amf")
-                && (platform_name != "linux" || entry.file_name() != "amf")
-        });
+        .filter_entry(|entry| entry.file_name() != "tools" && entry.file_name() != "platform");
 
-    let platform_iter = walkdir::WalkDir::new(platform_subpath).into_iter();
+    let platform_iter = walkdir::WalkDir::new(platform).into_iter();
 
     let cpp_paths = common_iter
         .chain(platform_iter)
@@ -68,134 +111,54 @@ fn main() {
         .include("cpp/openvr/headers")
         .include("cpp");
 
-    if platform_name == "windows" {
-        build
-            .debug(false) // This is because we cannot link to msvcrtd (see below)
-            .flag("/std:c++17")
-            .flag("/permissive-")
-            .define("NOMINMAX", None)
-            .define("_WINSOCKAPI_", None)
-            .define("_MBCS", None)
-            .define("_MT", None);
-    } else if platform_name == "macos" {
-        build.define("__APPLE__", None);
-    }
+    #[cfg(windows)]
+    build
+        .debug(false) // This is because we cannot link to msvcrtd (see below)
+        .flag("/std:c++17")
+        .flag("/permissive-")
+        .define("NOMINMAX", None)
+        .define("_WINSOCKAPI_", None)
+        .define("_MBCS", None)
+        .define("_MT", None);
+
+    #[cfg(target_os = "macos")]
+    build.define("__APPLE__", None);
 
     // #[cfg(debug_assertions)]
     // build.define("ALVR_DEBUG_LOG", None);
 
-    let gpl_or_linux = cfg!(feature = "gpl") || cfg!(target_os = "linux");
+    #[cfg(all(target_os = "linux", feature = "bundled_ffmpeg"))]
+    do_ffmpeg_pkg_config(&mut build);
 
-    if gpl_or_linux {
-        let ffmpeg_path = get_ffmpeg_path();
-
-        assert!(ffmpeg_path.join("include").exists());
-        build.include(ffmpeg_path.join("include"));
-    }
-
-    #[cfg(all(target_os = "linux", feature = "gpl"))]
+    #[cfg(all(windows, feature = "gpl"))]
     {
-        let x264_path = get_linux_x264_path();
-
-        assert!(x264_path.join("include").exists());
-        build.include(x264_path.join("include"));
+        do_ffmpeg_windows_config(&mut build);
+        build.define("ALVR_GPL", None);
     }
-
-    #[cfg(feature = "gpl")]
-    build.define("ALVR_GPL", None);
 
     build.compile("bindings");
 
-    #[cfg(all(target_os = "linux", feature = "gpl"))]
-    {
-        let x264_path = get_linux_x264_path();
-        let x264_lib_path = x264_path.join("lib");
-
-        println!(
-            "cargo:rustc-link-search=native={}",
-            x264_lib_path.to_string_lossy()
-        );
-
-        let x264_pkg_path = x264_lib_path.join("pkgconfig");
-        assert!(x264_pkg_path.exists());
-
-        let x264_pkg_path = x264_pkg_path.to_string_lossy().to_string();
-        env::set_var(
-            "PKG_CONFIG_PATH",
-            env::var("PKG_CONFIG_PATH").map_or(x264_pkg_path.clone(), |old| {
-                format!("{x264_pkg_path}:{old}")
-            }),
-        );
-        println!("cargo:rustc-link-lib=static=x264");
-
-        pkg_config::Config::new()
-            .statik(true)
-            .probe("x264")
-            .unwrap();
-    }
-
-    // ffmpeg
-    if gpl_or_linux {
-        let ffmpeg_path = get_ffmpeg_path();
-        let ffmpeg_lib_path = ffmpeg_path.join("lib");
-
-        assert!(ffmpeg_lib_path.exists());
-
-        println!(
-            "cargo:rustc-link-search=native={}",
-            ffmpeg_lib_path.to_string_lossy()
-        );
-
-        #[cfg(target_os = "linux")]
-        {
-            let ffmpeg_pkg_path = ffmpeg_lib_path.join("pkgconfig");
-            assert!(ffmpeg_pkg_path.exists());
-
-            let ffmpeg_pkg_path = ffmpeg_pkg_path.to_string_lossy().to_string();
-            env::set_var(
-                "PKG_CONFIG_PATH",
-                env::var("PKG_CONFIG_PATH").map_or(ffmpeg_pkg_path.clone(), |old| {
-                    format!("{ffmpeg_pkg_path}:{old}")
-                }),
-            );
-
-            let pkg = pkg_config::Config::new().statik(true).to_owned();
-
-            for lib in ["libavutil", "libavfilter", "libavcodec"] {
-                pkg.probe(lib).unwrap();
-            }
-        }
-        #[cfg(windows)]
-        for lib in ["avutil", "avfilter", "avcodec", "swscale"] {
-            println!("cargo:rustc-link-lib={lib}");
-        }
-    }
+    #[cfg(all(target_os = "linux", not(feature = "bundled_ffmpeg")))]
+    do_ffmpeg_pkg_config(&mut build);
 
     bindgen::builder()
         .clang_arg("-xc++")
         .header("cpp/alvr_server/bindings.h")
         .derive_default(true)
         .generate()
-        .unwrap()
+        .expect("bindings")
         .write_to_file(out_dir.join("bindings.rs"))
-        .unwrap();
+        .expect("bindings.rs");
 
-    if platform_name != "macos" {
-        println!(
-            "cargo:rustc-link-search=native={}",
-            cpp_dir.join("openvr/lib").to_string_lossy()
-        );
-        println!("cargo:rustc-link-lib=openvr_api");
-    }
+    println!(
+        "cargo:rustc-link-search=native={}",
+        cpp_dir.join("openvr/lib").to_string_lossy()
+    );
+    println!("cargo:rustc-link-lib=openvr_api");
 
     #[cfg(target_os = "linux")]
     {
         pkg_config::Config::new().probe("vulkan").unwrap();
-
-        #[cfg(not(feature = "gpl"))]
-        {
-            pkg_config::Config::new().probe("x264").unwrap();
-        }
 
         // fail build if there are undefined symbols in final library
         println!("cargo:rustc-cdylib-link-arg=-Wl,--no-undefined");

@@ -4,33 +4,29 @@
 #include "shared/threadtools.h"
 #include <atomic>
 #include <memory>
-#include <poll.h>
 #include <sys/types.h>
 
+class ClientConnection;
 class PoseHistory;
 
 class CEncoder : public CThread {
   public:
-    CEncoder(std::shared_ptr<PoseHistory> poseHistory);
+    CEncoder(std::shared_ptr<ClientConnection> listener, std::shared_ptr<PoseHistory> poseHistory);
     ~CEncoder();
     bool Init() override { return true; }
     void Run() override;
 
     void Stop();
-    void OnStreamStart();
     void OnPacketLoss();
     void InsertIDR();
-    bool IsConnected() { return m_connected; }
-    void CaptureFrame();
 
   private:
     void GetFds(int client, int (*fds)[6]);
+    std::shared_ptr<ClientConnection> m_listener;
     std::shared_ptr<PoseHistory> m_poseHistory;
     std::atomic_bool m_exiting{false};
     IDRScheduler m_scheduler;
-    pollfd m_socket;
+    int m_socket;
     std::string m_socketPath;
     int m_fds[6];
-    bool m_connected = false;
-    std::atomic_bool m_captureFrame = false;
 };
