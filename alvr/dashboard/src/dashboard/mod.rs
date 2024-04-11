@@ -18,6 +18,7 @@ use std::{
     ops::Deref,
     sync::{atomic::AtomicUsize, Arc},
 };
+use alvr_common::{info};
 
 #[derive(Clone)]
 pub struct DisplayString {
@@ -83,6 +84,12 @@ impl Dashboard {
         // Audio devices need to be queried early to mitigate buggy/slow hardware queries on Linux.
         data_sources.request(ServerRequest::GetSession);
         data_sources.request(ServerRequest::GetAudioDevices);
+
+        //yunjing++
+        // Auto launch SteamVR
+        if !data_sources.server_connected() {
+            crate::steamvr_launcher::LAUNCHER.lock().launch_steamvr();
+        }
 
         Self {
             data_sources,
@@ -178,7 +185,7 @@ impl eframe::App for Dashboard {
 
                     self.session = Some(*session);
                 }
-                EventType::ServerRequestsSelfRestart => self.restart_steamvr(&mut requests),
+                EventType::ServerRequestsSelfRestart => info!("[yj_dbg] Server requests self restart, ignore."),// self.restart_steamvr(&mut requests),
                 EventType::AudioDevices(list) => self.settings_tab.update_audio_devices(list),
                 #[cfg(not(target_arch = "wasm32"))]
                 EventType::DriversList(list) => self.installation_tab.update_drivers(list),
@@ -235,7 +242,7 @@ impl eframe::App for Dashboard {
                 .show(context, |ui| {
                     ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
                         ui.add_space(13.0);
-                        ui.heading(RichText::new("ALVR").size(25.0).strong());
+                        ui.heading(RichText::new("MIX").size(25.0).strong());
                         egui::warn_if_debug_build(ui);
                     });
 

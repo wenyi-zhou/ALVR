@@ -7,6 +7,7 @@ use eframe::{
     epaint::{Color32, Stroke},
 };
 use std::time::Duration;
+//use encoding_rs::GBK;
 
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
@@ -44,6 +45,11 @@ impl NotificationBar {
         if event.severity >= self.min_notification_level
             && (now > self.receive_instant + TIMEOUT || event.severity >= self.current_level)
         {
+            // // yunjing modify, convert event.content chinese to UTF-8
+            // let content_bytes = event.content.clone().into_bytes();
+            // let (content_utf8, _, _) = GBK.decode(&content_bytes);
+            // self.message = content_utf8.to_string();
+
             self.message = event.content;
             self.current_level = event.severity;
             self.receive_instant = now;

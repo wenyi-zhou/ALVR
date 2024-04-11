@@ -1062,10 +1062,10 @@ pub fn session_settings_default() -> SettingsDefault {
         variant: FrameSizeDefaultVariant::Absolute,
         Scale: 1.0,
         Absolute: FrameSizeAbsoluteDefault {
-            width: 2144,
+            width: 1600, //yunjing modify, 2144, 1588->1568 1600->1600
             height: OptionalDefault {
-                set: false,
-                content: 1072,
+                set: true, //yunjing modify, false
+                content: 1216, //yunjing modify, 1072, why effect ->eye_resolution_height writed by vrserver? 1200,1212,1215>1184 1216,1218,1222->1216 1260->1248 1316->1312
             },
         },
     };
@@ -1097,16 +1097,16 @@ pub fn session_settings_default() -> SettingsDefault {
             bitrate: BitrateConfigDefault {
                 gui_collapsed: false,
                 mode: BitrateModeDefault {
-                    ConstantMbps: 30,
+                    ConstantMbps: 40, //yunjing modify, 30
                     Adaptive: BitrateModeAdaptiveDefault {
-                        gui_collapsed: true,
+                        gui_collapsed: false, //yunjing modify, true
                         saturation_multiplier: 1.0,
                         max_bitrate_mbps: SwitchDefault {
-                            enabled: false,
+                            enabled: true, //yunjing modify, false
                             content: 100,
                         },
                         min_bitrate_mbps: SwitchDefault {
-                            enabled: false,
+                            enabled: true, //yunjing modify, false
                             content: 5,
                         },
                         max_network_latency_ms: SwitchDefault {
@@ -1141,7 +1141,7 @@ pub fn session_settings_default() -> SettingsDefault {
                 image_corruption_fix: false,
             },
             preferred_codec: CodecTypeDefault {
-                variant: CodecTypeDefaultVariant::H264,
+                variant: CodecTypeDefaultVariant::Hevc, //yunjing modify, H264
             },
             encoder_config: EncoderConfigDefault {
                 gui_collapsed: true,
@@ -1156,7 +1156,7 @@ pub fn session_settings_default() -> SettingsDefault {
                 nvenc: NvencConfigDefault {
                     gui_collapsed: true,
                     quality_preset: EncoderQualityPresetNvidiaDefault {
-                        variant: EncoderQualityPresetNvidiaDefaultVariant::P1,
+                        variant: EncoderQualityPresetNvidiaDefaultVariant::P3, //yunjing modify, P1
                     },
                     tuning_preset: NvencTuningPresetDefault {
                         variant: NvencTuningPresetDefaultVariant::LowLatency,
@@ -1185,7 +1185,7 @@ pub fn session_settings_default() -> SettingsDefault {
                 amf: AmfConfigDefault {
                     gui_collapsed: true,
                     quality_preset: EncoderQualityPresetAmdDefault {
-                        variant: EncoderQualityPresetAmdDefaultVariant::Speed,
+                        variant: EncoderQualityPresetAmdDefaultVariant::Balanced, //yunjing modify, Speed
                     },
                     enable_vbaq: false,
                     use_preproc: false,
@@ -1225,10 +1225,10 @@ pub fn session_settings_default() -> SettingsDefault {
                 }
             },
             foveated_rendering: SwitchDefault {
-                enabled: true,
+                enabled: false, //yunjing modify, true,
                 content: FoveatedRenderingConfigDefault {
-                    gui_collapsed: true,
-                    center_size_x: 0.45,
+                    gui_collapsed: false, //yunjing modify, true,
+                    center_size_x: 0.4, //yunjing modify, 0.45,
                     center_size_y: 0.4,
                     center_shift_x: 0.4,
                     center_shift_y: 0.1,
@@ -1237,9 +1237,9 @@ pub fn session_settings_default() -> SettingsDefault {
                 },
             },
             clientside_foveation: SwitchDefault {
-                enabled: true,
+                enabled: false, //yunjing modify, true,
                 content: ClientsideFoveationDefault {
-                    gui_collapsed: true,
+                    gui_collapsed: false, //yunjing modify, true,
                     mode: ClientsideFoveationModeDefault {
                         Static: ClientsideFoveationModeStaticDefault {
                             level: ClientsideFoveationLevelDefault {
@@ -1264,7 +1264,7 @@ pub fn session_settings_default() -> SettingsDefault {
                     brightness: 0.,
                     contrast: 0.,
                     saturation: 0.5,
-                    gamma: 1.,
+                    gamma: 2.2, //yunjing modify, 1.,
                     sharpening: 0.,
                 },
             },
@@ -1282,7 +1282,7 @@ pub fn session_settings_default() -> SettingsDefault {
                         set: false,
                         content: default_custom_audio_device.clone(),
                     },
-                    mute_when_streaming: true,
+                    mute_when_streaming: true, //yunjing, default true is ok: when system showing mute x is not output to speaker , res_app streaming still has sound
                     buffering: AudioBufferingConfigDefault {
                         gui_collapsed: true,
                         average_buffering_ms: 50,
@@ -1531,6 +1531,6 @@ pub fn session_settings_default() -> SettingsDefault {
             gui_collapsed: false,
             linux_async_reprojection: false,
         },
-        open_setup_wizard: alvr_common::is_stable() || alvr_common::is_nightly(),
+        open_setup_wizard: false, //yunjing modify, alvr_common::is_stable() || alvr_common::is_nightly(),
     }
 }

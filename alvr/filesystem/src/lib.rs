@@ -54,26 +54,26 @@ pub fn build_dir() -> PathBuf {
 }
 
 pub fn streamer_build_dir() -> PathBuf {
-    build_dir().join(format!("alvr_streamer_{OS}"))
+    build_dir().join(format!("mix_streamer_{OS}"))
 }
 
 pub fn launcher_build_dir() -> PathBuf {
-    build_dir().join(format!("alvr_launcher_{OS}"))
+    build_dir().join(format!("mix_launcher_{OS}"))
 }
 
 pub fn launcher_build_exe_path() -> PathBuf {
-    launcher_build_dir().join(exec_fname("ALVR Launcher"))
+    launcher_build_dir().join(exec_fname("MIX Launcher"))
 }
 
 pub fn installer_path() -> PathBuf {
-    env::temp_dir().join(exec_fname("alvr_installer"))
+    env::temp_dir().join(exec_fname("mix_installer"))
 }
 
 pub fn dashboard_fname() -> &'static str {
     if cfg!(windows) {
-        "ALVR Dashboard.exe"
+        "MIX Dashboard.exe"
     } else {
-        "alvr_dashboard"
+        "mix_dashboard"
     }
 }
 

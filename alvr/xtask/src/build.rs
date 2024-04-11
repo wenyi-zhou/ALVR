@@ -7,6 +7,7 @@ use std::{
     path::PathBuf,
 };
 use xshell::{cmd, Shell};
+use std::path::Path;
 
 #[derive(Clone, Copy)]
 pub enum Profile {
@@ -194,6 +195,25 @@ pub fn build_streamer(
         )
         .unwrap();
     }
+
+    //yunjing++, copy *.json from project root to the same directory as the compiled exe
+    let source_dir = Path::new("config");
+    let destination_dir = build_layout.executables_dir;
+    for entry in fs::read_dir(source_dir).expect("Failed to read source directory") {
+        if let Ok(entry) = entry {
+            let source_path = entry.path();
+            let file_name = source_path.file_name().unwrap().to_string_lossy().to_string();
+            let extension = source_path.extension().unwrap().to_string_lossy().to_string();
+
+            if extension == "json" || extension == "exe" || extension == "dll" {
+                let destination_path = destination_dir.join(file_name.clone());
+
+                fs::copy(source_path, destination_path)
+                    .expect(&format!("Failed to copy {}", file_name));
+            }
+        }
+    }
+
 }
 
 pub fn build_launcher(profile: Profile, enable_messagebox: bool, reproducible: bool) {
@@ -258,7 +278,7 @@ pub fn build_client_lib(profile: Profile, link_stdcpp: bool) {
 
     cmd!(
         sh,
-        "cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -p 26 {strip_flag...} -o {build_dir} build {flags_ref...}"
+        "cargo ndk -t arm64-v8a -p 29 {strip_flag...} -o {build_dir} build {flags_ref...}" // -t armeabi-v7a -t x86_64 -t x86 -p 26 //yunjing marked
     )
     .run()
     .unwrap();

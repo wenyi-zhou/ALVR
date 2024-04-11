@@ -140,6 +140,12 @@ async fn http_api(
                     }
                     ServerRequest::GetAudioDevices => {
                         if let Ok(list) = SERVER_DATA_MANAGER.read().get_audio_devices_list() {
+                            // for device in &list.output {
+                            //     debug!("[yj_dbg] Output: {}", device);
+                            // }
+                            // for device in &list.input {
+                            //     debug!("[yj_dbg] Input: {}", device);
+                            // }
                             alvr_events::send_event(EventType::AudioDevices(list));
                         }
                     }
@@ -302,11 +308,14 @@ async fn http_api(
 }
 
 pub async fn web_server(events_sender: broadcast::Sender<Event>) -> Result<()> {
-    let web_server_port = SERVER_DATA_MANAGER
-        .read()
-        .settings()
-        .connection
-        .web_server_port;
+
+    //yunjing modify
+    // let web_server_port = SERVER_DATA_MANAGER
+    //     .read()
+    //     .settings()
+    //     .connection
+    //     .web_server_port;
+    let web_server_port = alvr_sockets::mix_read_api_port_from_file();
 
     let service = service::make_service_fn(|_| {
         let events_sender = events_sender.clone();
@@ -317,6 +326,9 @@ pub async fn web_server(events_sender: broadcast::Sender<Event>) -> Result<()> {
                     let res = http_api(request, events_sender).await;
                     if let Err(e) = &res {
                         alvr_common::show_e(e);
+                        info!("[yj_dbg] http_api server {} request failed: {:?}", web_server_port, e);
+                    } else {
+                        //info!("[yj_dbg] http_api server {} request successfully", web_server_port);
                     }
 
                     res

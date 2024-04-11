@@ -4,6 +4,8 @@ use alvr_session::SessionConfig;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, time::Duration};
 
+pub const HEARTBEAT_STR: &str = "mix-device-heartbeat-tick"; //yunjing ++
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StatisticsSummary {
     pub video_packets_total: usize,

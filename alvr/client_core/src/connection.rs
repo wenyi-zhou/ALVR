@@ -31,6 +31,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use std::net::Ipv4Addr;
+// use encoding_rs::GBK;
 
 #[cfg(target_os = "android")]
 use crate::audio;
@@ -77,6 +79,20 @@ fn set_hud_message(message: &str) {
         Config::load().hostname,
         platform::local_ip(),
     );
+    // let message = format!(
+    //     "\u{4e91}\u{5883}\u{4e91}\u{6e32}\u{67b6}\u{7ec8}\u{7aef} v{}\nhostname: {}\nIP: {}\n\n{message}", //云境云渲染终端
+    //     *ALVR_VERSION,
+    //     Config::load().hostname,
+    //     platform::local_ip(),
+    // );
+
+    // let gbk_bytes = GBK.encode(&message).0;
+    // let utf8_message = std::str::from_utf8(&gbk_bytes).unwrap();
+    // let message = utf8_message.to_string();
+
+    // let bytes = message.as_bytes();
+    // let (decoded_message, _, _) = GBK.decode(bytes);
+    // let message = decoded_message.to_string();
 
     EVENT_QUEUE
         .lock()
@@ -86,21 +102,68 @@ fn set_hud_message(message: &str) {
 pub fn connection_lifecycle_loop(
     recommended_view_resolution: UVec2,
     supported_refresh_rates: Vec<f32>,
+    server_ip: Ipv4Addr, // yunjing ++
+    control_port_in: u16, // yunjing ++
+    media_port_in: u16, // yunjing ++
+    audio_port_in: u16, // yunjing ++
 ) {
     set_hud_message(INITIAL_MESSAGE);
+
+
+    //yunjing++
+    info!("[yj_dbg] connection_lifecycle_loop in");
+    let (control_port, media_port, audio_port) = alvr_sockets::mix_get_ports(control_port_in, media_port_in, audio_port_in);
+    let config = Config::load();
+    let hostname = config.hostname.clone();
+    let mut tick = 0;
+    let mut is_connected = false;
+
 
     while IS_ALIVE.value() {
         if IS_RESUMED.value() {
             if let Err(e) =
-                connection_pipeline(recommended_view_resolution, supported_refresh_rates.clone())
+                connection_pipeline(recommended_view_resolution, supported_refresh_rates.clone(), server_ip, control_port, media_port, audio_port)
             {
                 let message = format!("Connection error:\n{e}\nCheck the PC for more details");
                 set_hud_message(&message);
                 error!("Connection error: {e}");
+            }else{
+                is_connected = true;
             }
         } else {
             debug!("Skip try connection because the device is sleeping");
         }
+        
+
+        //yunjing++ udp heartbeat
+        if is_connected {
+            if tick % 5 == 0 { //send udp heartbeat every n seconds
+                info!("[yj_dbg] AnnouncerSocket send udp heartbeat");
+                let _hb_socket = match AnnouncerSocket::new(&hostname, server_ip, control_port, 1).to_con() {
+                    Ok(socket) => {
+                        // info!("[yj_dbg] connection_lifecycle_loop in, udp broadcast success");
+                        let broadcast_result = socket.broadcast();
+                        if let Err(e) = &broadcast_result {
+                            warn!("[yj_dbg] Broadcast heartbeat error: {e:?}");
+                            // set_hud_message(NETWORK_UNREACHABLE_MESSAGE);
+                            // set_hud_message(INITIAL_MESSAGE);
+                        } else {
+                            let message = broadcast_result.unwrap();
+                            info!("[yj_dbg] heartbeat success, message: {:?}", message);
+                        }
+    
+                        socket
+                    },
+                    Err(_e2) => {
+                        error!("[yj_dbg] Failed to create AnnouncerSocket");
+                        return;
+                    }
+                };
+                tick = 0;
+            }
+            tick += 1;
+        }
+
 
         thread::sleep(CONNECTION_RETRY_INTERVAL);
     }
@@ -109,15 +172,31 @@ pub fn connection_lifecycle_loop(
 fn connection_pipeline(
     recommended_view_resolution: UVec2,
     supported_refresh_rates: Vec<f32>,
+    server_ip: Ipv4Addr, // yunjing ++
+    control_port: u16, // yunjing ++
+    media_port: u16, // yunjing ++
+    _audio_port: u16, // yunjing ++
 ) -> ConResult {
     let (mut proto_control_socket, server_ip) = {
         let config = Config::load();
-        let announcer_socket = AnnouncerSocket::new(&config.hostname).to_con()?;
+
+        /* yunjing add comment: 
+            1. Discovery: PC listens to UDP 9943 - HMD broadcast
+            2. Control port: HMD listen to TCP 9943 - PC TCP random 5 digits
+            3. SteamVR streaming port: PC UDP 9944 - HMD also UDP 9944
+        */
+
+        let announcer_socket = AnnouncerSocket::new(&config.hostname, server_ip, control_port, 0).to_con()?;
         let listener_socket =
-            alvr_sockets::get_server_listener(HANDSHAKE_ACTION_TIMEOUT).to_con()?;
+            alvr_sockets::get_server_listener(HANDSHAKE_ACTION_TIMEOUT, control_port).to_con()?;
+
+        let print_str = announcer_socket.get_print_str();
+        info!("[yj_dbg] connection_pipeline in, udp broadcast {}", print_str);
 
         loop {
+
             if !IS_ALIVE.value() {
+                info!("[yj_dbg] onnection aborted");
                 return Ok(());
             }
 
@@ -131,14 +210,20 @@ fn connection_pipeline(
                 set_hud_message(INITIAL_MESSAGE);
 
                 return Ok(());
+            }else{
+                info!("[yj_dbg] send broadcast success");
             }
 
+            info!("[yj_dbg] tcp listen control_port:{}", control_port);
             if let Ok(pair) = ProtoControlSocket::connect_to(
                 DISCOVERY_RETRY_PAUSE,
                 PeerType::Server(&listener_socket),
+                control_port,
             ) {
                 break pair;
             }
+
+            // info!("[yj_dbg] tcp listen end, retrying in {:?}", DISCOVERY_RETRY_PAUSE);
         }
     };
 
@@ -241,7 +326,7 @@ fn connection_pipeline(
 
     let stream_socket_builder = StreamSocketBuilder::listen_for_server(
         Duration::from_secs(1),
-        settings.connection.stream_port,
+        media_port, //settings.connection.stream_port, //yunjing modify
         settings.connection.stream_protocol,
         settings.connection.client_send_buffer_bytes,
         settings.connection.client_recv_buffer_bytes,
@@ -256,12 +341,15 @@ fn connection_pipeline(
 
     let mut stream_socket = stream_socket_builder.accept_from_server(
         server_ip,
-        settings.connection.stream_port,
+
+         // yunjing modify
+        // settings.connection.stream_port,
+        media_port,
+        
         settings.connection.packet_size as _,
         HANDSHAKE_ACTION_TIMEOUT,
     )?;
-
-    info!("Connected to server");
+    info!("[yj_dbg] Connected to server ip: {server_ip} stream port: {}", media_port); // yunjing modify
 
     {
         let config = &mut *DECODER_INIT_CONFIG.lock();

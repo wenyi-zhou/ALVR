@@ -11,7 +11,8 @@ mod data_sources_wasm;
 mod logging_backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod steamvr_launcher;
-
+#[cfg(not(target_arch = "wasm32"))]
+mod mix_req; //yunjing++
 #[cfg(not(target_arch = "wasm32"))]
 use data_sources::DataSources;
 #[cfg(target_arch = "wasm32")]
@@ -29,6 +30,11 @@ fn main() {
 
     let (server_events_sender, server_events_receiver) = mpsc::channel();
     logging_backend::init_logging(server_events_sender.clone());
+ 
+    // yunjing ++
+    alvr_sockets::mix_write_args_to_file();
+    crate::mix_req::try_kill_prev_steamvr();
+    crate::mix_req::monitor_parent_process();
 
     {
         let mut data_manager = data_sources::get_local_data_source();
@@ -81,7 +87,7 @@ fn main() {
     }
 
     eframe::run_native(
-        &format!("ALVR Dashboard (streamer v{})", *ALVR_VERSION),
+        &format!("MIX Dashboard (streamer v{})", alvr_common::MIX_VERSION), //mix version
         NativeOptions {
             icon_data: Some(IconData {
                 rgba: image.rgba_data().to_owned(),

@@ -1,3 +1,4 @@
+use crate::mix_req; //yunjing++
 use alvr_common::{debug, error, info, parking_lot::Mutex, warn, RelaxedAtomic};
 use alvr_events::{Event, EventType};
 use alvr_packets::ServerRequest;
@@ -8,7 +9,7 @@ use std::{
     io::ErrorKind,
     net::{SocketAddr, TcpStream},
     str::FromStr,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, atomic},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -76,7 +77,15 @@ impl DataSources {
         let server_connected = Arc::new(RelaxedAtomic::new(false));
 
         let server_data_manager = get_local_data_source();
-        let port = server_data_manager.settings().connection.web_server_port;
+
+
+        //yunjing modify
+        // let port = server_data_manager.settings().connection.web_server_port;
+        let port = alvr_sockets::mix_read_api_port_from_file();
+        let lost_hmd_seconds = mix_req::MIX_SESSION.get_report_lost_hmd_seconds();
+        let is_write_stat_to_logfile = mix_req::MIX_SESSION.get_is_write_stat_to_logfile();
+
+
         let data_source = Arc::new(Mutex::new(DataSource::Local(Box::new(server_data_manager))));
 
         let requests_thread = thread::spawn({
@@ -119,6 +128,12 @@ impl DataSources {
                                 }
                                 ServerRequest::GetAudioDevices => {
                                     if let Ok(list) = data_manager.get_audio_devices_list() {
+                                        for device in &list.output {
+                                            debug!("[yj_dbg] Audio device: {}", device);
+                                        }
+                                        // for device in &list.input {
+                                        //     debug!("[yj_dbg] Input device: {}", device);
+                                        // }
                                         report_event_local(
                                             &context,
                                             &events_sender,
@@ -219,14 +234,81 @@ impl DataSources {
 
                     ws.get_mut().set_nonblocking(true).ok();
 
+
+                    //yunjing++ for "streaming"
+                    let duration_10 = Duration::from_secs(10);
+                    let duration_1 = Duration::from_secs(1);
+                    let mut last_print_10 = Instant::now();
+                    let mut last_print_1 = Instant::now();
+                    let mut is_first_entry = true;
+
+                    //yunjing++ for "aborted"
+                    let last_entry = Arc::new(Mutex::new(Instant::now()));
+                    let last_entry_clone = Arc::clone(&last_entry);
+                    let has_entered = Arc::new(atomic::AtomicBool::new(false));
+                    let has_entered_clone = Arc::clone(&has_entered);
+                    thread::spawn(move || {
+                        loop {
+                            thread::sleep(Duration::from_secs(1));
+                    
+                            let mut last_entry_lock = last_entry_clone.lock();
+                    
+                            if has_entered_clone.load(atomic::Ordering::SeqCst) {
+                                if last_entry_lock.elapsed() >= Duration::from_secs(lost_hmd_seconds) {
+                                    info!("No received client msg for 60 seconds, send aborted");
+                                    let _ = mix_req::send_steamvr_status_update("aborted");
+                                    *last_entry_lock = Instant::now();
+                                    has_entered_clone.store(false, atomic::Ordering::SeqCst);
+                                } else if last_entry_lock.elapsed() >= Duration::from_secs(20) {
+                                    if last_entry_lock.elapsed().as_secs() % 10 == 0 {
+                                        info!("No received client msg for {} seconds", last_entry_lock.elapsed().as_secs());
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+
                     while running.value() {
                         match ws.read() {
                             Ok(tungstenite::Message::Text(json_string)) => {
                                 if let Ok(event) = serde_json::from_str(&json_string) {
-                                    debug!("Server event received: {event:?}");
+                                    //yunjing modify
+                                    if last_print_10.elapsed() >= duration_10 {
+                                        last_print_10 = Instant::now();
+                                        debug!("Server event received: {:?}, last_print: {:?}, duration: {:?}", 
+                                            event, last_print_10, duration_10);
+                                    }
+                                    if json_string.contains("GraphStatistics") && is_write_stat_to_logfile && last_print_1.elapsed() >= duration_1 {
+                                        last_print_1 = Instant::now();
+                                        mix_req::log_str2file(&json_string);
+                                    }
+
                                     events_sender.send(event).ok();
                                     context.request_repaint();
                                 }
+
+                                //yunjing++
+                                if json_string.contains(alvr_events::HEARTBEAT_STR) || json_string.contains("GraphStatistics") {
+                                    //update timer
+                                    let mut last_entry_lock = last_entry.lock();
+                                    *last_entry_lock = Instant::now();
+                                    has_entered.store(true, atomic::Ordering::SeqCst);
+
+                                    //send status
+                                    if json_string.contains("GraphStatistics") {
+                                        if is_first_entry {
+                                            let _ = mix_req::send_steamvr_status_update("streaming"); //screen on streaming, screen off heartbeat connected
+                                            is_first_entry = false;
+                                        }
+                                    }else if json_string.contains(alvr_events::HEARTBEAT_STR) {
+                                        if !is_first_entry {
+                                            let _ = mix_req::send_steamvr_status_update("connected"); //steamvr connected is not connected, hmd connected is connected
+                                            is_first_entry = true;
+                                        }
+                                    }
+                                }
+
                             }
                             Err(e) => {
                                 if let tungstenite::Error::Io(e) = e {
@@ -267,10 +349,19 @@ impl DataSources {
                         if connected && matches!(*data_source_lock, DataSource::Local(_)) {
                             info!("Server connected");
                             *data_source_lock = DataSource::Remote;
+			    
+                            //yunjing++
+                            // let _ = mix_req::send_steamvr_status_update("connected"); //yunjing--, steamvr connected is not connected, hmd connected is connected
+                            mix_req::try_launch_res_app();
+
                         } else if !connected && matches!(*data_source_lock, DataSource::Remote) {
                             info!("Server disconnected");
                             *data_source_lock =
                                 DataSource::Local(Box::new(get_local_data_source()));
+                            
+                            //yunjing++
+                            // let _ = mix_req::send_steamvr_status_update("aborted"); //steamvr disconnected is not aborted, hmd manual disconnected is aborted
+
                         }
                     }
 

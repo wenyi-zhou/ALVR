@@ -1,3 +1,4 @@
+use crate::mix_req; //yunjing++
 use crate::data_sources;
 use alvr_common::{debug, once_cell::sync::Lazy, parking_lot::Mutex};
 use alvr_filesystem as afs;
@@ -139,17 +140,22 @@ impl Launcher {
         #[cfg(target_os = "linux")]
         alvr_common::show_err(maybe_wrap_vrcompositor_launcher());
 
-        if !is_steamvr_running() {
-            debug!("SteamVR is dead. Launching...");
+        // if !is_steamvr_running() {
+            debug!("SteamVR Launching...");
 
             #[cfg(windows)]
             {
-                use std::os::windows::process::CommandExt;
-                Command::new("cmd")
-                    .args(["/C", "start", "steam://rungameid/250820"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .spawn()
-                    .ok();
+                //yunjing modify
+
+                // use std::os::windows::process::CommandExt;
+                // Command::new("cmd")
+                //     .args(["/C", "start", "steam://rungameid/250820"])
+                //     .creation_flags(CREATE_NO_WINDOW)
+                //     .spawn()
+                //     .ok();
+
+                mix_req::try_launch_steamvr();
+                
             }
             #[cfg(not(windows))]
             {
@@ -158,7 +164,7 @@ impl Launcher {
                     .spawn()
                     .ok();
             }
-        }
+        // }
     }
 
     pub fn ensure_steamvr_shutdown(&self) {

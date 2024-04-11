@@ -8,6 +8,8 @@ use std::{
 pub static ALVR_VERSION: Lazy<Version> =
     Lazy::new(|| Version::parse(env!("CARGO_PKG_VERSION")).unwrap());
 
+pub static MIX_VERSION: &str = "1.1.11"; //mix version
+
 // Consistent across architectures, might not be consistent across different compiler versions.
 pub fn hash_string(string: &str) -> u64 {
     let mut hasher = DefaultHasher::new();

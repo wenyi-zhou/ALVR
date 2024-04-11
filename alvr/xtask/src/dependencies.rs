@@ -230,11 +230,11 @@ fn get_android_openxr_loaders() {
         "OpenXR/Libs/Android/arm64-v8a/Release",
     );
 
-    get_openxr_loader(
-        "pico",
-        "https://sdk.picovr.com/developer-platform/sdk/PICO_OpenXR_SDK_220.zip",
-        "libs/android.arm64-v8a",
-    );
+    // get_openxr_loader(
+    //     "pico",
+    //     "https://sdk.picovr.com/developer-platform/sdk/PICO_OpenXR_SDK_220.zip",
+    //     "libs/android.arm64-v8a",
+    // );
 
     get_openxr_loader(
         "yvr",
@@ -242,11 +242,11 @@ fn get_android_openxr_loaders() {
         "yvr_openxr_mobile_sdk_1.0.0/OpenXR/Libs/Android/arm64-v8a",
     );
 
-    get_openxr_loader(
-        "lynx",
-        "https://portal.lynx-r.com/downloads/download/16", // version 1.0.0
-        "jni/arm64-v8a",
-    );
+    // get_openxr_loader(
+    //     "lynx",
+    //     "https://portal.lynx-r.com/downloads/download/16", // version 1.0.0
+    //     "jni/arm64-v8a",
+    // );
 }
 
 pub fn build_android_deps(skip_admin_priv: bool) {

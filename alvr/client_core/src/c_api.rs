@@ -141,6 +141,10 @@ pub unsafe extern "C" fn alvr_initialize(
     refresh_rates: *const f32,
     refresh_rates_count: i32,
     external_decoder: bool,
+    server_ip_str: *const c_char, // yunjing++
+    control_port: u16, // yunjing++
+    media_port: u16, // yunjing++
+    audio_port: u16, // yunjing++
 ) {
     #[cfg(target_os = "android")]
     ndk_context::initialize_android_context(java_vm, context);
@@ -150,10 +154,17 @@ pub unsafe extern "C" fn alvr_initialize(
     let supported_refresh_rates =
         slice::from_raw_parts(refresh_rates, refresh_rates_count as _).to_vec();
 
+    //yunjing ++
+    let server_ip_str_convert = CStr::from_ptr(server_ip_str).to_str().unwrap();
+
     crate::initialize(
         recommended_view_resolution,
         supported_refresh_rates,
         external_decoder,
+        server_ip_str_convert, // yunjing++
+        control_port, // yunjing++
+        media_port, // yunjing++
+        audio_port, // yunjing++
     );
 }
 

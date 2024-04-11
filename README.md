@@ -1,88 +1,85 @@
-<p align="center"> <img width="500" src="resources/alvr_combined_logo_hq.png"/> </p>
+# 调试指令
+```
+"D:\work\alvr-pc\build\mix_streamer_windows\MIX Dashboard.exe" --control_port=31303 --media_port=31304 --boxie_index=3 --res_app="'D:\XR\VRCar\VRCar.exe'"
+```
 
-# ALVR - Air Light VR
 
-[![badge-discord][]][link-discord] [![badge-matrix][]][link-matrix] [![badge-opencollective][]][link-opencollective]
+# 编译客户端
+编译库：
+```bash
 
-Stream VR games from your PC to your headset via Wi-Fi.  
-ALVR uses technologies like [Asynchronous Timewarp](https://developer.oculus.com/documentation/native/android/mobile-timewarp-overview) and [Fixed Foveated Rendering](https://developer.oculus.com/documentation/native/android/mobile-ffr) for a smoother experience.  
-Most of the games that run on SteamVR or Oculus Software (using Revive) should work with ALVR.  
-This is a fork of [ALVR](https://github.com/polygraphene/ALVR).
+//若报错error: could not compile `symphonia-bundle-mp3` (lib)，执行rustup update后编译；//执行cargo xtask clean，和手动删掉target目录，再编译
 
-|      VR Headset       |                                Support                                 |
-| :-------------------: | :--------------------------------------------------------------------: |
-|     Quest 1/2/Pro     |                           :heavy_check_mark:                           |
-|     Pico 4/Neo 3      |                           :heavy_check_mark:                           |
-| Vive Focus 3/XR Elite |                           :heavy_check_mark:                           |
-|        YVR 1/2        |                           :heavy_check_mark:                           |
-|        Lynx R1        |                           :heavy_check_mark:                           |
-|   Smartphone/Monado   |                              :warning: *                               |
-|   Google Cardboard    | :warning: * ([PhoneVR](https://github.com/PhoneVR-Developers/PhoneVR)) |
-|        GearVR         |                         :construction: (maybe)                         |
-|       Oculus Go       |                                 :x: **                                 |
+cargo xtask build-client-lib --no-stdcpp --release
 
-\* : Only works on some smartphones, not enough testing.  
-\** : Oculus Go support was dropped, the minimum supported OS is Android 8. Download the last compatible version [here](https://github.com/alvr-org/ALVR/releases/tag/v18.2.3).
+cargo xtask build-client-lib
 
-|        PC OS        |       Support       |
-| :-----------------: | :-----------------: |
-|   Windows 8/10/11   | :heavy_check_mark:  |
-|    Windows 7/XP     |         :x:         |
-|     Ubuntu/Arch     |    :warning: ***    |
-| Other linux distros | :grey_question: *** |
-|        macOS        |         :x:         |
+```
 
-\*** : Linux support is still in beta. To be able to make audio work or run ALVR at all you may need advanced knowledge of your distro for debugging or building from source.
+编译客户端:
+```bash
+cargo xtask build-client
+```
 
-## Requirements
+# 编译PC端
+目录 ALVR\build\alvr_streamer_windows\ALVR Dashboard.exe
 
--   A supported standalone VR headset (see compatibility table above)
+编译
+```bash
+//关掉vrmonitor后，vrserver还要30秒才自动退出，会占用driver_alvr_server.dll文件编不了，所以先kill
+taskkill /IM vrserver.exe /F; cargo xtask build-streamer
+```
 
--   SteamVR
+打包安装包
+```bash
+cargo xtask package-streamer --no-rebuild
+```
 
--   High-end gaming PC
-    -   See OS compatibility table above.
-    -   NVIDIA GPU that supports NVENC (1000 GTX Series or higher) (or with an AMD GPU that supports AMF VCE) with the latest driver.
-    -   Laptops with an onboard (Intel HD, AMD iGPU) and an additional dedicated GPU (NVidia GTX/RTX, AMD HD/R5/R7): you should assign the dedicated GPU or "high performance graphics adapter" to the applications ALVR, SteamVR for best performance and compatibility. (NVidia: Nvidia control panel->3d settings->application settings; AMD: similiar way)
+重新编译
+```bash
+cargo xtask clean
+```
 
--   802.11ac 5Ghz wireless or ethernet wired connection  
-    -   It is recommended to use 802.11ac 5Ghz for the headset and ethernet for PC  
-    -   You need to connect both the PC and the headset to same router (or use a routed connection as described [here](https://github.com/alvr-org/ALVR/wiki/ALVR-v14-and-Above))
+HELP
+```bash
+cargo xtask
+Developement actions for ALVR.
 
-## Install
+USAGE:
+    cargo xtask <SUBCOMMAND> [FLAG] [ARGS]
 
-Follow the installation guide [here](https://github.com/alvr-org/ALVR/wiki/Installation-guide).
+SUBCOMMANDS:
+    prepare-deps        Download and compile streamer and client external dependencies
+    build-streamer      Build streamer, then copy binaries to build folder
+    build-launcher      Build launcher, then copy binaries to build folder
+    build-client        Build client, then copy binaries to build folder
+    build-client-lib    Build a C-ABI ALVR client library and header.
+    run-streamer        Build streamer and then open the dashboard
+    run-launcher        Build launcher and then open it
+    package-streamer    Build streamer with distribution profile, make archive
+    package-launcher    Build launcher in release mode, make portable and installer versions
+    package-client-lib  Build client library then zip it
+    clean               Removes all build artifacts and dependencies.
+    bump                Bump streamer and client package versions
+    clippy              Show warnings for selected clippy lints
+    kill-oculus         Kill all Oculus processes
 
-## Troubleshooting
+FLAGS:
+    --help              Print this text
+    --keep-config       Preserve the configuration file between rebuilds (session.json)
+    --no-nvidia         Disables nVidia support on Linux. For prepare-deps subcommand
+    --release           Optimized build with less debug checks. For build subcommands
+    --gpl               Bundle GPL libraries (FFmpeg). Only for Windows
+    --appimage          Package as AppImage. For package-streamer subcommand
+    --zsync             For --appimage, create .zsync update file and build AppImage with embedded update information. For package-streamer subcommand
+    --nightly           Append nightly tag to versions. For bump subcommand
+    --no-rebuild        Do not rebuild the streamer with run-streamer
+    --ci                Do some CI related tweaks. Depends on the other flags and subcommand
+    --no-stdcpp         Disable linking to libc++_shared with build-client-lib
 
--   Please check the [Troubleshooting](https://github.com/alvr-org/ALVR/wiki/Troubleshooting) page. The original repository [wiki](https://github.com/polygraphene/ALVR/wiki/Troubleshooting) can also help.  
--   Configuration recommendations and information may be found [here](https://github.com/alvr-org/ALVR/wiki/PC)
-
-## Uninstall
-
-Open `ALVR Dashboard.exe`, go to `Installation` tab then press `Remove firewall rules`. Close ALVR window and delete the ALVR folder.
-
-## Build from source
-
-You can follow the guide [here](https://github.com/alvr-org/ALVR/wiki/Building-From-Source).
-
-## License
-
-ALVR is licensed under the [MIT License](LICENSE).
-
-## Privacy policy
-
-ALVR apps do not directly collect any kind of data.
-
-## Donate
-
-If you want to support this project you can make a donation to our [Open Source Collective account](https://opencollective.com/alvr).
-
-You can also donate to the original author of ALVR using Paypal (polygraphene@gmail.com) or with bitcoin (1FCbmFVSjsmpnAj6oLx2EhnzQzzhyxTLEv).
-
-[badge-discord]: https://img.shields.io/discord/720612397580025886?style=for-the-badge&logo=discord&color=5865F2 "Join us on Discord"
-[link-discord]: https://discord.gg/ALVR
-[badge-matrix]: https://img.shields.io/static/v1?label=chat&message=%23alvr&style=for-the-badge&logo=matrix&color=blueviolet "Join us on Matrix"
-[link-matrix]: https://matrix.to/#/#alvr:ckie.dev?via=ckie.dev
-[badge-opencollective]: https://img.shields.io/opencollective/all/alvr?style=for-the-badge&logo=opencollective&color=79a3e6 "Donate"
-[link-opencollective]: https://opencollective.com/alvr
+ARGS:
+    --platform <NAME>   Name of the platform (operative system or hardware name). snake_case
+    --version <VERSION> Specify version to set with the bump-versions subcommand
+    --root <PATH>       Installation root. By default no root is set and paths are calculated using
+                        relative paths, which requires conforming to FHS on Linux.
+```

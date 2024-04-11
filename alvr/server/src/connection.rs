@@ -239,7 +239,7 @@ pub fn handshake_loop() {
             .client_discovery
             .clone();
         if let Switch::Enabled(config) = discovery_config {
-            let (client_hostname, client_ip) = match welcome_socket.recv() {
+            let (client_hostname, client_ip, _server_ip, is_heartbeat) = match welcome_socket.recv() { //yunjing ++ server_ip
                 Ok(pair) => pair,
                 Err(e) => {
                     if let ConnectionError::Other(e) = e {
@@ -249,6 +249,12 @@ pub fn handshake_loop() {
                     continue;
                 }
             };
+
+            // If is_heartbeat is 1, skip the current loop iteration
+            if is_heartbeat == 1 {
+                info!("{}", alvr_events::HEARTBEAT_STR); //send to dashboard /api/events Log-data-content
+                continue;
+            }
 
             let trusted = {
                 let mut data_manager = SERVER_DATA_MANAGER.write();
@@ -285,7 +291,7 @@ pub fn handshake_loop() {
                 if let Err(e) =
                     try_connect([(client_ip, client_hostname.clone())].into_iter().collect())
                 {
-                    error!("Handshake error for {client_hostname}: {e}");
+                    warn!("Handshake error for {client_hostname}: {e}");
                 }
             }
         }
@@ -295,9 +301,14 @@ pub fn handshake_loop() {
 }
 
 fn try_connect(mut client_ips: HashMap<IpAddr, String>) -> ConResult {
+
+    //yunjing++
+    let control_port = alvr_sockets::mix_read_control_port_from_file();
+
     let (mut proto_socket, client_ip) = ProtoControlSocket::connect_to(
         Duration::from_secs(1),
         PeerType::AnyClient(client_ips.keys().cloned().collect()),
+        control_port,//yunjing++
     )?;
 
     let (disconnect_sender, disconnect_receiver) = mpsc::channel();
@@ -429,7 +440,7 @@ fn try_connect(mut client_ips: HashMap<IpAddr, String>) -> ConResult {
         .supported_refresh_rates
         .contains(&settings.video.preferred_fps)
     {
-        warn!("Chosen refresh rate not supported. Using {fps}Hz");
+        warn!("Refresh rate not {}, Using Device's {}Hz", &settings.video.preferred_fps, fps);
     }
 
     let game_audio_sample_rate =
@@ -512,15 +523,19 @@ fn try_connect(mut client_ips: HashMap<IpAddr, String>) -> ConResult {
 
     *BITRATE_MANAGER.lock() = BitrateManager::new(settings.video.bitrate.history_size, fps);
 
+    //yunjing++
+    let (_, media_port, audio_port, _, _, _) = alvr_sockets::mix_read_args_from_file();
+
     let mut stream_socket = StreamSocketBuilder::connect_to_client(
         HANDSHAKE_ACTION_TIMEOUT,
         client_ip,
-        settings.connection.stream_port,
+        media_port, //settings.connection.stream_port, //yunjing modify
         settings.connection.stream_protocol,
         settings.connection.server_send_buffer_bytes,
         settings.connection.server_recv_buffer_bytes,
         settings.connection.packet_size as _,
     )?;
+    info!("[yj_dbg] stream_socket connect_to_client media_port: {}", media_port);
 
     let mut video_sender = stream_socket.request_stream(VIDEO);
     let game_audio_sender = stream_socket.request_stream(AUDIO);
@@ -672,8 +687,9 @@ fn try_connect(mut client_ips: HashMap<IpAddr, String>) -> ConResult {
                     .face_tracking
                     .into_option()
                     .and_then(|config| {
-                        FaceTrackingSink::new(config.sink, settings.connection.osc_local_port).ok()
+                        FaceTrackingSink::new(config.sink, audio_port).ok() //settings.connection.osc_local_port //yunjing modify
                     });
+                    info!("[yj_dbg] Face tracking enabled osc_local_port{}", audio_port);
 
             while IS_STREAMING.value() {
                 let data = match tracking_receiver.recv(STREAMING_RECV_TIMEOUT) {

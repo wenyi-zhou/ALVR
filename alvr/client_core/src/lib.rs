@@ -25,6 +25,7 @@ pub use logging_backend::init_logging;
 pub use platform::try_get_permission;
 
 use alvr_common::{
+    info,
     error,
     glam::{UVec2, Vec2},
     once_cell::sync::Lazy,
@@ -44,6 +45,7 @@ use std::{
     time::Duration,
 };
 use storage::Config;
+use std::net::Ipv4Addr;
 
 static STATISTICS_MANAGER: LazyMutOpt<StatisticsManager> = alvr_common::lazy_mut_none();
 
@@ -93,6 +95,10 @@ pub fn initialize(
     recommended_view_resolution: UVec2,
     supported_refresh_rates: Vec<f32>,
     external_decoder: bool,
+    server_ip_str: &str, // yunjing ++
+    control_port: u16, // yunjing ++
+    media_port: u16, // yunjing ++
+    audio_port: u16, // yunjing ++
 ) {
     logging_backend::init_logging();
 
@@ -110,8 +116,12 @@ pub fn initialize(
     IS_ALIVE.set(true);
     EXTERNAL_DECODER.set(external_decoder);
 
+    // yunjing ++
+    let server_ip: Ipv4Addr = server_ip_str.parse().unwrap_or(Ipv4Addr::new(0, 0, 0, 0));
+    info!("[yj_dbg] server_ip_addr: {}", server_ip);
+
     *CONNECTION_THREAD.lock() = Some(thread::spawn(move || {
-        connection::connection_lifecycle_loop(recommended_view_resolution, supported_refresh_rates)
+        connection::connection_lifecycle_loop(recommended_view_resolution, supported_refresh_rates, server_ip, control_port, media_port, audio_port)
     }));
 }
 

@@ -115,6 +115,12 @@ dependencies = [
 
 [[package]]
 name = "ahash"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0453232ace82dee0dd0b4c87a59bd90f7b53b314f3e0f61fe2ee7c8a16482289"
+
+[[package]]
+name = "ahash"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c99f64d1e06488f620f932677e24bc6e2897582980441ae90a671415bd7ec2f"
@@ -189,6 +195,7 @@ dependencies = [
  "bincode",
  "bindgen 0.66.1",
  "cc",
+ "encoding_rs",
  "env_logger",
  "glyph_brush_layout",
  "jni 0.21.1",
@@ -260,16 +267,21 @@ dependencies = [
  "alvr_packets",
  "alvr_server_io",
  "alvr_session",
+ "alvr_sockets",
  "bincode",
  "chrono",
  "console_error_panic_hook",
  "eframe",
+ "encoding_rs",
  "env_logger",
  "ewebsock",
  "futures",
  "gloo-net",
  "ico",
  "instant",
+ "lazy_static",
+ "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "settings-schema",
@@ -280,6 +292,8 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-logger",
  "wgpu",
+ "winapi",
+ "winreg",
  "winres",
 ]
 
@@ -378,6 +392,7 @@ dependencies = [
  "alvr_filesystem",
  "alvr_packets",
  "alvr_session",
+ "alvr_sockets",
  "cpal",
  "dirs",
  "encoding_rs_io",
@@ -404,9 +419,13 @@ dependencies = [
  "alvr_common",
  "alvr_session",
  "bincode",
+ "rand",
+ "rust-ini",
  "serde",
  "serde_json",
  "socket2 0.5.3",
+ "winapi",
+ "winreg",
 ]
 
 [[package]]
@@ -1476,6 +1495,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlv-list"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68df3f2b690c1b86e65ef7830956aededf3cb0a16f898f79b9a6f421a7b6211b"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1525,7 +1553,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3aef8ec3ae1b772f340170c65bf27d5b8c28f543a0116c844d2ac08d01123e7"
 dependencies = [
  "accesskit",
- "ahash",
+ "ahash 0.8.3",
  "epaint",
  "log",
  "nohash-hasher",
@@ -1637,7 +1665,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09333964d4d57f40a85338ba3ca5ed4716070ab184dcfed966b35491c5c64f3b"
 dependencies = [
  "ab_glyph",
- "ahash",
+ "ahash 0.8.3",
  "atomic_refcell",
  "bytemuck",
  "ecolor",
@@ -2246,6 +2274,15 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7afe4a420e3fe79967a00898cc1f4db7c8a49a9333a29f8a4bd76a253d5cd04"
+dependencies = [
+ "ahash 0.4.8",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
@@ -2256,7 +2293,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c6201b9ff9fd90a5a3bac2e56a830d0caa509576f0e503818ee82c181b3437a"
 dependencies = [
- "ahash",
+ "ahash 0.8.3",
  "allocator-api2",
 ]
 
@@ -3463,6 +3500,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-multimap"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c672c7ad9ec066e428c00eb917124a06f08db19e2584de982cc34b1f4c12485"
+dependencies = [
+ "dlv-list",
+ "hashbrown 0.9.1",
+]
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3929,6 +3976,16 @@ checksum = "ed87390fefd18965ff20baae5aeb9913bcf82d2b59dc04c0f6d8f17f7be56ff2"
 dependencies = [
  "cc",
  "which",
+]
+
+[[package]]
+name = "rust-ini"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63471c4aa97a1cf8332a5f97709a79a4234698de6a1f5087faf66f2dae810e22"
+dependencies = [
+ "cfg-if",
+ "ordered-multimap",
 ]
 
 [[package]]

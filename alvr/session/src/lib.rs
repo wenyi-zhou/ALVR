@@ -113,6 +113,7 @@ pub enum ConnectionState {
 pub struct ClientConnectionConfig {
     pub display_name: String,
     pub current_ip: Option<IpAddr>,
+    //pub server_ip: Option<IpAddr>,
     pub manual_ips: HashSet<IpAddr>,
     pub trusted: bool,
     pub connection_state: ConnectionState,
@@ -136,15 +137,15 @@ impl Default for SessionConfig {
             openvr_config: OpenvrConfig {
                 // avoid realistic resolutions, as on first start, on Linux, it
                 // could trigger direct mode on an existing monitor
-                eye_resolution_width: 800,
-                eye_resolution_height: 900,
-                target_eye_resolution_width: 800,
-                target_eye_resolution_height: 900,
+                eye_resolution_width: 1600,
+                eye_resolution_height: 1216, //yunjing, 1184
+                target_eye_resolution_width: 1600,
+                target_eye_resolution_height: 1216, //yunjing, 1184
                 adapter_index: 0,
-                refresh_rate: 60,
-                controllers_enabled: false,
+                refresh_rate: 72,
+                controllers_enabled: true, //yunjing, false
                 enable_foveated_rendering: false,
-                enable_color_correction: false,
+                enable_color_correction: true, //yunjing, false
                 linux_async_reprojection: false,
                 capture_frame_dir: "/tmp".into(),
                 ..<_>::default()

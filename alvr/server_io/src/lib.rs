@@ -73,10 +73,41 @@ impl ServerDataManager {
         fs::create_dir_all(config_dir).ok();
         let session_desc = Self::load_session(session_path, config_dir);
 
-        Self {
+        let mut manager = Self {
             session: session_desc.clone(),
             settings: session_desc.to_settings(),
             session_path: session_path.to_owned(),
+        };
+
+        //yunjing++
+        manager.mix_update_audio_device();
+
+        manager
+    }
+
+    //yunjing, modify setting for multi steamvr in boxie
+    pub fn mix_update_audio_device(&mut self) {
+        let boxie_index = alvr_sockets::mix_read_boxie_index_from_file();
+        if boxie_index > 0 {
+            let mut audio_device_name = String::new();
+
+            if let Ok(list) = self.get_audio_devices_list() {
+                for device in &list.output {
+                    if device.starts_with(&format!("Line {} (", boxie_index)) {
+                        audio_device_name = device.clone();
+                        //info!("[yj_dbg] audio device: {}", device);
+                        break;
+                    }
+                }
+            }
+
+            if !audio_device_name.is_empty() {
+                self.session.session_settings.audio.game_audio.content.device.set = true;
+                self.session.session_settings.audio.game_audio.content.device.content.NameSubstring = audio_device_name.clone();
+                info!("[yj_dbg] set audio device: {}", audio_device_name);
+            }else{
+	    	info!("[yj_dbg] set audio device failed, not found 'Line {} (xxx)' device", boxie_index);
+	    }
         }
     }
 
@@ -200,6 +231,7 @@ impl ServerDataManager {
                     let client_connection_desc = ClientConnectionConfig {
                         display_name: "Unknown".into(),
                         current_ip: None,
+                        //server_ip: None, //yunjing++
                         manual_ips: manual_ips.into_iter().collect(),
                         trusted,
                         connection_state: ConnectionState::Disconnected,

@@ -1,6 +1,6 @@
 use crate::backend::{tcp, SocketReader, SocketWriter};
 
-use super::CONTROL_PORT;
+// use super::CONTROL_PORT;
 use alvr_common::{anyhow::Result, ConResult, HandleTryAgain, ToCon};
 use alvr_session::SocketBufferSize;
 use serde::{de::DeserializeOwned, Serialize};
@@ -123,10 +123,11 @@ impl<R: DeserializeOwned> ControlSocketReceiver<R> {
     }
 }
 
-pub fn get_server_listener(timeout: Duration) -> Result<TcpListener> {
+ //yunjing ++ control_port: u16
+pub fn get_server_listener(timeout: Duration, control_port: u16) -> Result<TcpListener> {
     let listener = tcp::bind(
         timeout,
-        CONTROL_PORT,
+        control_port, //CONTROL_PORT //yunjing modify
         SocketBufferSize::Default,
         SocketBufferSize::Default,
     )?;
@@ -146,13 +147,14 @@ pub enum PeerType<'a> {
 }
 
 impl ProtoControlSocket {
-    pub fn connect_to(timeout: Duration, peer: PeerType<'_>) -> ConResult<(Self, IpAddr)> {
+    pub fn connect_to(timeout: Duration, peer: PeerType<'_>, control_port: u16) -> ConResult<(Self, IpAddr)> { //yunjing++control_port
+
         let socket = match peer {
             PeerType::AnyClient(ips) => {
                 tcp::connect_to_client(
                     timeout,
                     &ips,
-                    CONTROL_PORT,
+                    control_port, //CONTROL_PORT,
                     SocketBufferSize::Default,
                     SocketBufferSize::Default,
                 )?

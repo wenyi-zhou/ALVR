@@ -87,7 +87,9 @@ void NvEncoder::LoadNvEncApi()
 
     if (currentVersion > version)
     {
-        NVENC_THROW_ERROR("Current Driver Version does not support this NvEncodeAPI version, please upgrade driver", NV_ENC_ERR_INVALID_VERSION);
+        std::ostringstream oss;
+        oss << "Current Required Min Driver Version: " << currentVersion << ", does not support this computer NvEncodeAPI version: " << version << ", please upgrade driver";
+        NVENC_THROW_ERROR(oss.str(), NV_ENC_ERR_INVALID_VERSION);
     }
 
     typedef NVENCSTATUS(NVENCAPI *NvEncodeAPICreateInstance_Type)(NV_ENCODE_API_FUNCTION_LIST*);

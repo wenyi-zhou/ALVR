@@ -2,6 +2,13 @@ mod backend;
 mod control_socket;
 mod stream_socket;
 
+//yunjing++
+mod mix_common;
+
+ //yunjing++
+#[cfg(windows)]
+mod mix_lib;
+
 use alvr_common::{anyhow::Result, info};
 use alvr_session::SocketBufferSize;
 use std::{
@@ -12,9 +19,16 @@ use std::{
 pub use control_socket::*;
 pub use stream_socket::*;
 
+ //yunjing++
+pub use mix_common::*;
+
+ //yunjing++
+#[cfg(windows)]
+pub use mix_lib::*;
+
 pub const LOCAL_IP: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 pub const CONTROL_PORT: u16 = 9943;
-pub const HANDSHAKE_PACKET_SIZE_BYTES: usize = 56; // this may change in future protocols
+pub const HANDSHAKE_PACKET_SIZE_BYTES: usize = 61; // this may change in future protocols // 56 -> 60 yunjing ++ server_ip 4 bytes
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(500);
 pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(2);
 
