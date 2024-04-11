@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"path": "./"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.gch": "html",
+			"*.idl": "c",
+			"*.in": "c",
+			"tuple": "c",
+			"functional": "c",
+			"type_traits": "c",
+			"utility": "c",
+			"numeric": "c",
+			"ratio": "c",
+			"xiosbase": "c",
+			"ebtables.h": "c",
+			"quec.h": "c",
+			"thread": "c",
+			"xlocale": "c"
+		},
+		"makefile.extensionOutputFolder": "./.vscode"
+	}
+}

@@ -1,0 +1,8 @@
+{
+  "render_server": {
+    "url": "http://127.0.0.1:35101",
+    "report_lost_hmd_seconds": 60,
+    "is_write_stat_to_logfile": false,
+    "steamvr_path bak": "C:\\SteamVR\\bin\\win64\\vrmonitor.exe"
+  }
+}
