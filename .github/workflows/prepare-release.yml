@@ -13,7 +13,7 @@ on:
 
 jobs:
   build_linux_streamer:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     needs: []
     steps:
       - uses: actions/checkout@v2
