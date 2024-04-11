@@ -104,14 +104,14 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
     let download_path = afs::deps_dir().join("linux");
     command::download_and_extract_zip(
         &sh,
-        "https://codeload.github.com/FFmpeg/FFmpeg/zip/n5.1.4",
+        "https://codeload.github.com/FFmpeg/FFmpeg/zip/n6.1.1",
         &download_path,
     )
     .unwrap();
 
     let final_path = download_path.join("ffmpeg");
 
-    fs::rename(download_path.join("FFmpeg-n5.1.4"), &final_path).unwrap();
+    fs::rename(download_path.join("FFmpeg-n6.1.1"), &final_path).unwrap();
 
     let flags = [
         "--enable-gpl",
@@ -133,7 +133,7 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
         "--enable-hwaccel=h264_vaapi",
         "--enable-hwaccel=hevc_vaapi",
         "--enable-filter=scale_vaapi",
-        "--enable-vulkan",
+        // "--enable-vulkan",
         "--enable-libdrm",
         "--enable-pic",
         "--enable-rpath",
