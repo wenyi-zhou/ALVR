@@ -1,16 +1,20 @@
-use crate::{graphics_info, ClientListAction, FILESYSTEM_LAYOUT, SESSION_MANAGER};
-use alvr_common::{prelude::*, ALVR_VERSION};
-use alvr_session::ServerEvent;
+use crate::{
+    DECODER_CONFIG, FILESYSTEM_LAYOUT, RESTART_NOTIFIER, SERVER_DATA_MANAGER, VIDEO_MIRROR_SENDER,
+    VIDEO_RECORDING_FILE,
+};
+use alvr_common::{log, prelude::*};
+use alvr_events::{Event, EventType};
+use alvr_packets::ServerRequest;
 use bytes::Buf;
 use futures::SinkExt;
 use headers::HeaderMapExt;
 use hyper::{
-    header::{self, HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TYPE},
+    header::{HeaderValue, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TYPE},
     service, Body, Request, Response, StatusCode,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json as json;
-use std::{env::consts::OS, fs, io::Write, net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, thread};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_tungstenite::{tungstenite::protocol, WebSocketStream};
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -18,42 +22,46 @@ use tokio_util::codec::{BytesCodec, FramedRead};
 pub const WS_BROADCAST_CAPACITY: usize = 256;
 
 fn reply(code: StatusCode) -> StrResult<Response<Body>> {
-    trace_err!(Response::builder().status(code).body(Body::empty()))
-}
-
-fn reply_json<T: Serialize>(obj: &T) -> StrResult<Response<Body>> {
-    trace_err!(Response::builder()
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(trace_err!(json::to_string(obj))?.into()))
+    Response::builder()
+        .status(code)
+        .body(Body::empty())
+        .map_err(err!())
 }
 
 async fn from_request_body<T: DeserializeOwned>(request: Request<Body>) -> StrResult<T> {
-    trace_err!(json::from_reader(
-        trace_err!(hyper::body::aggregate(request).await)?.reader()
-    ))
+    json::from_reader(
+        hyper::body::aggregate(request)
+            .await
+            .map_err(err!())?
+            .reader(),
+    )
+    .map_err(err!())
 }
 
-async fn text_websocket(
+async fn websocket<T: Clone + Send + 'static>(
     request: Request<Body>,
-    sender: broadcast::Sender<String>,
+    sender: broadcast::Sender<T>,
+    message_builder: impl Fn(T) -> protocol::Message + Send + Sync + 'static,
 ) -> StrResult<Response<Body>> {
     if let Some(key) = request.headers().typed_get::<headers::SecWebsocketKey>() {
         tokio::spawn(async move {
             match hyper::upgrade::on(request).await {
                 Ok(upgraded) => {
-                    let mut log_receiver = sender.subscribe();
+                    let mut data_receiver = sender.subscribe();
 
                     let mut ws =
                         WebSocketStream::from_raw_socket(upgraded, protocol::Role::Server, None)
                             .await;
 
                     loop {
-                        match log_receiver.recv().await {
-                            Ok(line) => {
-                                if let Err(e) = ws.send(protocol::Message::text(line)).await {
+                        match data_receiver.recv().await {
+                            Ok(data) => {
+                                if let Err(e) = ws.send(message_builder(data)).await {
                                     info!("Failed to send log with websocket: {e}");
                                     break;
                                 }
+
+                                ws.flush().await.ok();
                             }
                             Err(RecvError::Lagged(_)) => {
                                 warn!("Some log lines have been lost because the buffer is full");
@@ -68,9 +76,10 @@ async fn text_websocket(
             }
         });
 
-        let mut response = trace_err!(Response::builder()
+        let mut response = Response::builder()
             .status(StatusCode::SWITCHING_PROTOCOLS)
-            .body(Body::empty()))?;
+            .body(Body::empty())
+            .map_err(err!())?;
 
         let h = response.headers_mut();
         h.typed_insert(headers::Upgrade::websocket());
@@ -85,170 +94,119 @@ async fn text_websocket(
 
 async fn http_api(
     request: Request<Body>,
-    log_sender: broadcast::Sender<String>,
-    events_sender: broadcast::Sender<String>,
+    events_sender: broadcast::Sender<Event>,
 ) -> StrResult<Response<Body>> {
     let mut response = match request.uri().path() {
-        "/api/settings-schema" => reply_json(&alvr_session::settings_schema(
-            alvr_session::session_settings_default(),
-        ))?,
-        "/api/session/load" => reply_json(SESSION_MANAGER.lock().get())?,
-        "/api/session/store-settings" => {
-            if let Ok(session_settings) = from_request_body::<json::Value>(request).await {
-                let res = SESSION_MANAGER
-                    .lock()
-                    .get_mut()
-                    .merge_from_json(&json::json!({ "session_settings": session_settings }));
-                if let Err(e) = res {
-                    warn!("{e}");
-                    // HTTP Code: WARNING
-                    reply(trace_err!(StatusCode::from_u16(199))?)?
-                } else {
-                    reply(StatusCode::OK)?
-                }
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/session/store" => {
-            if let Ok(data) = from_request_body::<json::Value>(request).await {
-                if let Some(value) = data.get("session") {
-                    let res = SESSION_MANAGER.lock().get_mut().merge_from_json(value);
-                    if let Err(e) = res {
-                        warn!("{e}");
-                        // HTTP Code: WARNING
-                        reply(trace_err!(StatusCode::from_u16(199))?)?
-                    } else {
-                        reply(StatusCode::OK)?
+        // New unified requests
+        "/api/dashboard-request" => {
+            if let Ok(request) = from_request_body::<ServerRequest>(request).await {
+                match request {
+                    ServerRequest::Log(event) => {
+                        let level = event.severity.into_log_level();
+                        log::log!(level, "{}", event.content);
                     }
-                } else {
-                    reply(StatusCode::BAD_REQUEST)?
-                }
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/log" => text_websocket(request, log_sender).await?,
-        "/api/events" => text_websocket(request, events_sender).await?,
-        "/api/driver/register" => {
-            if alvr_commands::driver_registration(
-                &[FILESYSTEM_LAYOUT.openvr_driver_root_dir.clone()],
-                true,
-            )
-            .is_ok()
-            {
-                reply(StatusCode::OK)?
-            } else {
-                reply(StatusCode::INTERNAL_SERVER_ERROR)?
-            }
-        }
-        "/api/driver/unregister" => {
-            if let Ok(path) = from_request_body::<PathBuf>(request).await {
-                if alvr_commands::driver_registration(&[path], false).is_ok() {
-                    reply(StatusCode::OK)?
-                } else {
-                    reply(StatusCode::INTERNAL_SERVER_ERROR)?
-                }
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/driver/list" => {
-            reply_json(&alvr_commands::get_registered_drivers().unwrap_or_default())?
-        }
-        uri @ ("/api/firewall-rules/add" | "/api/firewall-rules/remove") => {
-            let add = uri.ends_with("add");
-            let maybe_err = alvr_commands::firewall_rules(add).err();
-            if let Some(e) = &maybe_err {
-                error!("Setting firewall rules failed: code {e}");
-            }
-            reply_json(&maybe_err.unwrap_or(0))?
-        }
-        "/api/audio-devices" => reply_json(&alvr_audio::get_devices_list(
-            SESSION_MANAGER
-                .lock()
-                .get()
-                .to_settings()
-                .audio
-                .linux_backend,
-        )?)?,
-        "/api/graphics-devices" => reply_json(&graphics_info::get_gpu_names())?,
-        "/restart-steamvr" => {
-            crate::notify_restart_driver();
-            reply(StatusCode::OK)?
-        }
-        "/api/client/add" => {
-            if let Ok((display_name, hostname, ip)) =
-                from_request_body::<(_, String, _)>(request).await
-            {
-                crate::update_client_list(
-                    hostname.clone(),
-                    ClientListAction::AddIfMissing { display_name },
-                );
-                crate::update_client_list(hostname, ClientListAction::TrustAndMaybeAddIp(Some(ip)));
+                    ServerRequest::GetSession => {
+                        alvr_events::send_event(EventType::Session(Box::new(
+                            SERVER_DATA_MANAGER.read().session().clone(),
+                        )));
+                    }
+                    ServerRequest::UpdateSession(session) => {
+                        *SERVER_DATA_MANAGER.write().session_mut() = *session
+                    }
+                    ServerRequest::SetValues(descs) => {
+                        SERVER_DATA_MANAGER.write().set_values(descs).ok();
+                    }
+                    ServerRequest::UpdateClientList { hostname, action } => {
+                        SERVER_DATA_MANAGER
+                            .write()
+                            .update_client_list(hostname, action);
 
-                reply(StatusCode::OK)?
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/client/trust" => {
-            if let Ok((hostname, maybe_ip)) = from_request_body(request).await {
-                crate::update_client_list(hostname, ClientListAction::TrustAndMaybeAddIp(maybe_ip));
-                reply(StatusCode::OK)?
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/client/remove" => {
-            if let Ok((hostname, maybe_ip)) = from_request_body(request).await {
-                crate::update_client_list(hostname, ClientListAction::RemoveIpOrEntry(maybe_ip));
-                reply(StatusCode::OK)?
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/version" => Response::new(ALVR_VERSION.to_string().into()),
-        "/api/open" => {
-            if let Ok(url) = from_request_body::<String>(request).await {
-                webbrowser::open(&url).ok();
-                reply(StatusCode::OK)?
-            } else {
-                reply(StatusCode::BAD_REQUEST)?
-            }
-        }
-        "/api/server-os" => Response::new(OS.into()),
-        "/api/update" => {
-            if let Ok(url) = from_request_body::<String>(request).await {
-                let redirection_response = trace_err!(reqwest::get(&url).await)?;
-                let mut resource_response =
-                    trace_err!(reqwest::get(redirection_response.url().clone()).await)?;
-
-                let mut file = trace_err!(fs::File::create(alvr_filesystem::installer_path()))?;
-
-                let mut downloaded_bytes_count = 0;
-                loop {
-                    match resource_response.chunk().await {
-                        Ok(Some(chunk)) => {
-                            downloaded_bytes_count += chunk.len();
-                            trace_err!(file.write_all(&chunk))?;
-                            alvr_session::log_event(ServerEvent::UpdateDownloadedBytesCount(
-                                downloaded_bytes_count,
-                            ));
+                        RESTART_NOTIFIER.notify_waiters();
+                    }
+                    ServerRequest::GetAudioDevices => {
+                        if let Ok(list) = SERVER_DATA_MANAGER.read().get_audio_devices_list() {
+                            alvr_events::send_event(EventType::AudioDevices(list));
                         }
-                        Ok(None) => break,
-                        Err(e) => {
-                            alvr_session::log_event(ServerEvent::UpdateDownloadError);
-                            error!("Download update failed: {e}");
-                            return reply(StatusCode::BAD_GATEWAY);
+                    }
+                    ServerRequest::CaptureFrame => unsafe { crate::CaptureFrame() },
+                    ServerRequest::InsertIdr => unsafe { crate::RequestIDR() },
+                    ServerRequest::StartRecording => crate::create_recording_file(),
+                    ServerRequest::StopRecording => *VIDEO_RECORDING_FILE.lock() = None,
+                    ServerRequest::FirewallRules(action) => {
+                        if alvr_server_io::firewall_rules(action).is_ok() {
+                            info!("Setting firewall rules succeeded!");
+                        } else {
+                            error!("Setting firewall rules failed!");
                         }
+                    }
+                    ServerRequest::RegisterAlvrDriver => {
+                        alvr_server_io::driver_registration(
+                            &[FILESYSTEM_LAYOUT.openvr_driver_root_dir.clone()],
+                            true,
+                        )
+                        .ok();
+
+                        if let Ok(list) = alvr_server_io::get_registered_drivers() {
+                            alvr_events::send_event(EventType::DriversList(list));
+                        }
+                    }
+                    ServerRequest::UnregisterDriver(path) => {
+                        alvr_server_io::driver_registration(&[path], false).ok();
+
+                        if let Ok(list) = alvr_server_io::get_registered_drivers() {
+                            alvr_events::send_event(EventType::DriversList(list));
+                        }
+                    }
+                    ServerRequest::GetDriverList => {
+                        if let Ok(list) = alvr_server_io::get_registered_drivers() {
+                            alvr_events::send_event(EventType::DriversList(list));
+                        }
+                    }
+                    ServerRequest::RestartSteamvr => {
+                        thread::spawn(crate::restart_driver);
+                    }
+                    ServerRequest::ShutdownSteamvr => {
+                        // This lint is bugged with extern "C"
+                        #[allow(clippy::redundant_closure)]
+                        thread::spawn(|| crate::shutdown_driver());
                     }
                 }
 
-                crate::notify_application_update();
+                reply(StatusCode::OK)?
+            } else {
+                reply(StatusCode::BAD_REQUEST)?
             }
-            reply(StatusCode::BAD_REQUEST)?
         }
+        "/api/events" => {
+            websocket(request, events_sender, |e| {
+                protocol::Message::Text(json::to_string(&e).unwrap())
+            })
+            .await?
+        }
+        "/api/video-mirror" => {
+            let sender = {
+                let mut sender_lock = VIDEO_MIRROR_SENDER.lock();
+                if let Some(sender) = &mut *sender_lock {
+                    sender.clone()
+                } else {
+                    let (sender, _) = broadcast::channel(WS_BROADCAST_CAPACITY);
+                    *sender_lock = Some(sender.clone());
+
+                    sender
+                }
+            };
+
+            if let Some(config) = &*DECODER_CONFIG.lock() {
+                sender.send(config.config_buffer.clone()).ok();
+            }
+
+            let res = websocket(request, sender, protocol::Message::Binary).await?;
+
+            unsafe { crate::RequestIDR() };
+
+            res
+        }
+        "/api/ping" => reply(StatusCode::OK)?,
         other_uri => {
             if other_uri.contains("..") {
                 // Attempted tree traversal
@@ -267,12 +225,16 @@ async fn http_api(
 
                 if let Ok(file) = maybe_file {
                     let mut builder = Response::builder();
+                    if other_uri.ends_with(".js") {
+                        builder = builder.header(CONTENT_TYPE, "text/javascript");
+                    }
                     if other_uri.ends_with(".wasm") {
                         builder = builder.header(CONTENT_TYPE, "application/wasm");
                     }
-                    trace_err!(
-                        builder.body(Body::wrap_stream(FramedRead::new(file, BytesCodec::new())))
-                    )?
+
+                    builder
+                        .body(Body::wrap_stream(FramedRead::new(file, BytesCodec::new())))
+                        .map_err(err!())?
                 } else {
                     reply(StatusCode::NOT_FOUND)?
                 }
@@ -282,7 +244,7 @@ async fn http_api(
 
     response.headers_mut().insert(
         CACHE_CONTROL,
-        trace_err!(HeaderValue::from_str("no-cache, no-store, must-revalidate"))?,
+        HeaderValue::from_str("no-cache, no-store, must-revalidate").map_err(err!())?,
     );
     response
         .headers_mut()
@@ -291,26 +253,20 @@ async fn http_api(
     Ok(response)
 }
 
-pub async fn web_server(
-    log_sender: broadcast::Sender<String>,
-    events_sender: broadcast::Sender<String>,
-) -> StrResult {
-    let web_server_port = SESSION_MANAGER
-        .lock()
-        .get()
-        .to_settings()
+pub async fn web_server(events_sender: broadcast::Sender<Event>) -> StrResult {
+    let web_server_port = SERVER_DATA_MANAGER
+        .read()
+        .settings()
         .connection
         .web_server_port;
 
     let service = service::make_service_fn(|_| {
-        let log_sender = log_sender.clone();
         let events_sender = events_sender.clone();
         async move {
             StrResult::Ok(service::service_fn(move |request| {
-                let log_sender = log_sender.clone();
                 let events_sender = events_sender.clone();
                 async move {
-                    let res = http_api(request, log_sender, events_sender).await;
+                    let res = http_api(request, events_sender).await;
                     if let Err(e) = &res {
                         alvr_common::show_e(e);
                     }
@@ -321,12 +277,11 @@ pub async fn web_server(
         }
     });
 
-    trace_err!(
-        hyper::Server::bind(&SocketAddr::new(
-            "0.0.0.0".parse().unwrap(),
-            web_server_port
-        ))
-        .serve(service)
-        .await
-    )
+    hyper::Server::bind(&SocketAddr::new(
+        "0.0.0.0".parse().unwrap(),
+        web_server_port,
+    ))
+    .serve(service)
+    .await
+    .map_err(err!())
 }

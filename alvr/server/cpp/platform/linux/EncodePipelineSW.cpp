@@ -1,128 +1,131 @@
 #include "EncodePipelineSW.h"
 
-#include <algorithm>
 #include <chrono>
 
 #include "alvr_server/Settings.h"
-#include "ffmpeg_helper.h"
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavutil/opt.h>
-#include <libswscale/swscale.h>
-}
+#include "alvr_server/Logger.h"
+#include "FormatConverter.h"
 
 namespace
 {
 
-const char * encoder(ALVR_CODEC codec)
+void x264_log(void *, int level, const char *fmt, va_list args)
 {
-  switch (codec)
-  {
-    case ALVR_CODEC_H264:
-      return "libx264";
-    case ALVR_CODEC_H265:
-      return "libx265";
-  }
-  throw std::runtime_error("invalid codec " + std::to_string(codec));
+    char buf[256];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    switch (level) {
+    case X264_LOG_ERROR:
+        Error("x264: %s", buf);
+        break;
+    case X264_LOG_WARNING:
+        Warn("x264: %s", buf);
+        break;
+    case X264_LOG_INFO:
+        Info("x264: %s", buf);
+        break;
+    case X264_LOG_DEBUG:
+        Debug("x264: %s", buf);
+        break;
+    default:
+        break;
+    }
 }
 
-
 }
 
-alvr::EncodePipelineSW::EncodePipelineSW(std::vector<VkFrame>& input_frames, VkFrameCtx& vk_frame_ctx)
+alvr::EncodePipelineSW::EncodePipelineSW(Renderer *render, uint32_t width, uint32_t height)
 {
-  for (auto& input_frame: input_frames)
-  {
-    vk_frames.push_back(input_frame.make_av_frame(vk_frame_ctx).release());
-  }
-
   const auto& settings = Settings::Instance();
 
-  auto codec_id = ALVR_CODEC(settings.m_codec);
-  const char * encoder_name = encoder(codec_id);
-  const AVCodec *codec = AVCODEC.avcodec_find_encoder_by_name(encoder_name);
-  if (codec == nullptr)
-  {
-    throw std::runtime_error(std::string("Failed to find encoder ") + encoder_name);
+  x264_param_default_preset(&param, "ultrafast", "zerolatency");
+  x264_param_apply_profile(&param, "high");
+
+  param.pf_log = x264_log;
+  param.i_log_level = X264_LOG_INFO;
+
+  param.b_aud = 0;
+  param.b_cabac = settings.m_entropyCoding == ALVR_CABAC;
+  param.b_sliced_threads = true;
+  param.i_threads = settings.m_swThreadCount;
+  param.i_width = width;
+  param.i_height = height;
+  param.rc.i_rc_method = X264_RC_ABR;
+
+  auto params = FfiDynamicEncoderParams {};
+  params.updated = true;
+  params.bitrate_bps = 30'000'000;
+  params.framerate = Settings::Instance().m_refreshRate;
+  SetParams(params);
+
+  enc = x264_encoder_open(&param);
+  if (!enc) {
+    throw std::runtime_error("Failed to open encoder");
   }
 
-  encoder_ctx = AVCODEC.avcodec_alloc_context3(codec);
-  if (not encoder_ctx)
-  {
-    throw std::runtime_error("failed to allocate " + std::string(encoder_name) + " encoder");
-  }
+  x264_picture_init(&picture);
+  picture.img.i_csp = X264_CSP_I420;
+  picture.img.i_plane = 3;
 
-  AVDictionary * opt = NULL;
-  switch (codec_id)
-  {
-    case ALVR_CODEC_H264:
-      encoder_ctx->profile = settings.m_use10bitEncoder ? FF_PROFILE_H264_HIGH_10 : FF_PROFILE_H264_HIGH;
-      AVUTIL.av_dict_set(&opt, "preset", "ultrafast", 0);
-      AVUTIL.av_dict_set(&opt, "tune", "zerolatency", 0);
-      encoder_ctx->gop_size = 72;
-      break;
-    case ALVR_CODEC_H265:
-      encoder_ctx->profile = settings.m_use10bitEncoder ? FF_PROFILE_HEVC_MAIN_10 : FF_PROFILE_HEVC_MAIN;
-      AVUTIL.av_dict_set(&opt, "preset", "ultrafast", 0);
-      AVUTIL.av_dict_set(&opt, "tune", "zerolatency", 0);
-      encoder_ctx->gop_size = 72;
-      break;
-  }
+  x264_picture_init(&picture_out);
 
-
-  encoder_ctx->width = settings.m_renderWidth;
-  encoder_ctx->height = settings.m_renderHeight;
-  encoder_ctx->time_base = {1, (int)1e9};
-  encoder_ctx->framerate = AVRational{settings.m_refreshRate, 1};
-  encoder_ctx->sample_aspect_ratio = AVRational{1, 1};
-  encoder_ctx->pix_fmt = settings.m_use10bitEncoder ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
-  encoder_ctx->max_b_frames = 0;
-  encoder_ctx->bit_rate = settings.mEncodeBitrateMBs * 1000 * 1000;
-  encoder_ctx->thread_count = settings.m_swThreadCount;
-
-  int err = AVCODEC.avcodec_open2(encoder_ctx, codec, &opt);
-  if (err < 0) {
-    throw alvr::AvException("Cannot open video encoder codec:", err);
-  }
-
-  transferred_frame = AVUTIL.av_frame_alloc();
-  encoder_frame = AVUTIL.av_frame_alloc();
-  encoder_frame->width = settings.m_renderWidth;
-  encoder_frame->height = settings.m_renderHeight;
-  encoder_frame->format = encoder_ctx->pix_fmt;
-  AVUTIL.av_frame_get_buffer(encoder_frame, 0);
-
-  scaler_ctx = SWSCALE.sws_getContext(
-          vk_frames[0]->width, vk_frames[0]->height, ((AVHWFramesContext*)vk_frames[0]->hw_frames_ctx->data)->sw_format,
-          encoder_ctx->width, encoder_ctx->height, encoder_ctx->pix_fmt,
-          SWS_BILINEAR,
-          NULL, NULL, NULL);
+  rgbtoyuv = new RgbToYuv420(render, render->GetOutput().image, render->GetOutput().imageInfo, render->GetOutput().semaphore);
 }
 
 alvr::EncodePipelineSW::~EncodePipelineSW()
 {
-  for (auto &vk_frame: vk_frames)
-    AVUTIL.av_frame_free(&vk_frame);
-  AVUTIL.av_frame_free(&transferred_frame);
-  AVUTIL.av_frame_free(&encoder_frame);
+  if (rgbtoyuv) {
+    delete rgbtoyuv;
+  }
+  if (enc) {
+    x264_encoder_close(enc);
+  }
 }
 
-void alvr::EncodePipelineSW::PushFrame(uint32_t frame_index, uint64_t targetTimestampNs, bool idr)
+void alvr::EncodePipelineSW::PushFrame(uint64_t targetTimestampNs, bool idr)
 {
-  int err = AVUTIL.av_hwframe_transfer_data(transferred_frame, vk_frames[frame_index], 0);
-  if (err)
-    throw alvr::AvException("av_hwframe_transfer_data", err);
+  rgbtoyuv->Convert(picture.img.plane, picture.img.i_stride);
+  rgbtoyuv->Sync();
+  timestamp.cpu = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-  err = SWSCALE.sws_scale(scaler_ctx, transferred_frame->data, transferred_frame->linesize, 0, transferred_frame->height,
-      encoder_frame->data, encoder_frame->linesize);
-  if (err == 0)
-    throw alvr::AvException("sws_scale failed:", err);
+  picture.i_type = idr ? X264_TYPE_IDR : X264_TYPE_AUTO;
+  pts = picture.i_pts = targetTimestampNs;
 
-  encoder_frame->pict_type = idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
-  encoder_frame->pts = targetTimestampNs;
-
-  if ((err = AVCODEC.avcodec_send_frame(encoder_ctx, encoder_frame)) < 0) {
-    throw alvr::AvException("avcodec_send_frame failed:", err);
+  int nnal = 0;
+  nal_size = x264_encoder_encode(enc, &nal, &nnal, &picture, &picture_out);
+  if (nal_size < 0) {
+    throw std::runtime_error("x264 encoder_encode failed");
   }
+}
+
+bool alvr::EncodePipelineSW::GetEncoded(FramePacket &packet)
+{
+  if (!nal) {
+    return false;
+  }
+  packet.size = nal_size;
+  packet.data = nal[0].p_payload;
+  packet.pts = pts;
+  return packet.size > 0;
+}
+
+void alvr::EncodePipelineSW::SetParams(FfiDynamicEncoderParams params)
+{
+  if (!params.updated) {
+    return;
+  }
+  // x264 doesn't work well with adaptive bitrate/fps
+  param.i_fps_num = Settings::Instance().m_refreshRate;
+  param.i_fps_den = 1;
+  param.rc.i_bitrate = params.bitrate_bps / 1'000 * 1.4; // needs higher value to hit target bitrate
+  param.rc.i_vbv_buffer_size = param.rc.i_bitrate / param.i_fps_num * 1.1;
+  param.rc.i_vbv_max_bitrate = param.rc.i_bitrate;
+  param.rc.f_vbv_buffer_init = 0.75;
+  if (enc) {
+    x264_encoder_reconfig(enc, &param);
+  }
+}
+
+int alvr::EncodePipelineSW::GetCodec()
+{
+  return ALVR_CODEC_H264;
 }

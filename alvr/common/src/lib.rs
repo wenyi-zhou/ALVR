@@ -1,72 +1,80 @@
+mod average;
 mod logging;
+mod paths;
+mod primitives;
+mod version;
 
-use semver::{Prerelease, Version};
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
+    fmt::Display,
+    sync::atomic::{AtomicBool, Ordering},
 };
-
-pub use glam;
-pub use lazy_static::lazy_static;
-pub use log;
-pub use logging::*;
-pub use semver;
-
-pub type StrResult<T = ()> = Result<T, String>;
-
-pub const ALVR_NAME: &str = "ALVR";
 
 pub mod prelude {
     pub use crate::{
-        fmt_e, logging::*, trace_err, trace_err_dbg, trace_none, trace_str, StrResult,
+        check_interrupt, enone, err, err_dbg, fmt_e, int_e, int_fmt_e, interrupt, logging::*,
+        to_int_e, IntResult, InterruptibleError, StrResult,
     };
     pub use log::{debug, error, info, warn};
 }
 
-lazy_static! {
-    pub static ref ALVR_VERSION: Version = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
-}
+pub use log;
+pub use once_cell;
+pub use parking_lot;
+pub use semver;
+pub use settings_schema;
 
-// accept semver-compatible versions
-// Note: by not having to set the requirement manually, the major version is constrained to be
-// bumped when the packet layouts or some critical behaviour has changed.
-pub fn is_version_compatible(other_version: &Version) -> bool {
-    if other_version.pre != Prerelease::EMPTY || ALVR_VERSION.pre != Prerelease::EMPTY {
-        other_version.major == ALVR_VERSION.major
-            && other_version.minor == ALVR_VERSION.minor
-            && other_version.patch == ALVR_VERSION.patch
-            && other_version.pre == ALVR_VERSION.pre
-        // Note: metadata (+) is always ignored in the version check
-    } else {
-        other_version.major == ALVR_VERSION.major
+pub use average::*;
+pub use logging::*;
+pub use paths::*;
+pub use primitives::*;
+pub use version::*;
+
+pub const ALVR_NAME: &str = "ALVR";
+
+pub type StrResult<T = ()> = Result<T, String>;
+
+pub enum InterruptibleError {
+    Interrupted,
+    Other(String),
+}
+impl Display for InterruptibleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterruptibleError::Interrupted => write!(f, "Action interrupted"),
+            InterruptibleError::Other(s) => write!(f, "{}", s),
+        }
     }
 }
+pub type IntResult<T = ()> = Result<T, InterruptibleError>;
 
-pub fn is_nightly() -> bool {
-    ALVR_VERSION.build.contains("nightly")
+pub fn interrupt<T>() -> IntResult<T> {
+    Err(InterruptibleError::Interrupted)
 }
 
-pub fn is_stable() -> bool {
-    ALVR_VERSION.pre == Prerelease::EMPTY && !is_nightly()
+/// Bail out if interrupted
+#[macro_export]
+macro_rules! check_interrupt {
+    ($running:expr) => {
+        if !$running {
+            return interrupt();
+        }
+    };
 }
 
-// Consistent across architectures, might not be consistent across different compiler versions.
-pub fn hash_string(string: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    string.hash(&mut hasher);
-    hasher.finish()
-}
+// Simple wrapper for AtomicBool when using Ordering::Relaxed. Deref cannot be implemented (cannot
+// return local reference)
+pub struct RelaxedAtomic(AtomicBool);
 
-pub const HEAD_PATH: &str = "/user/head";
-pub const LEFT_HAND_PATH: &str = "/user/hand/left";
-pub const RIGHT_HAND_PATH: &str = "/user/hand/right";
-pub const LEFT_CONTROLLER_HAPTIC_PATH: &str = "/user/hand/left/output/haptic";
-pub const RIGHT_CONTROLLER_HAPTIC_PATH: &str = "/user/hand/right/output/haptic";
+impl RelaxedAtomic {
+    pub const fn new(initial_value: bool) -> Self {
+        Self(AtomicBool::new(initial_value))
+    }
 
-lazy_static! {
-    pub static ref HEAD_ID: u64 = hash_string(HEAD_PATH);
-    pub static ref LEFT_HAND_ID: u64 = hash_string(LEFT_HAND_PATH);
-    pub static ref RIGHT_HAND_ID: u64 = hash_string(RIGHT_HAND_PATH);
-    pub static ref LEFT_CONTROLLER_HAPTIC_ID: u64 = hash_string(LEFT_CONTROLLER_HAPTIC_PATH);
-    pub static ref RIGHT_CONTROLLER_HAPTIC_ID: u64 = hash_string(RIGHT_CONTROLLER_HAPTIC_PATH);
+    pub fn value(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set(&self, value: bool) {
+        self.0.store(value, Ordering::Relaxed);
+    }
 }

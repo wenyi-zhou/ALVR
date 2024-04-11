@@ -1,151 +1,64 @@
-use std::{
-    env,
-    error::Error,
-    fmt::Display,
-    path::Path,
-    process::{Command, Stdio},
-};
+use std::path::Path;
+use xshell::{cmd, Shell};
 
-#[derive(Debug)]
-struct StringError(String);
-
-impl Display for StringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+pub fn zip(sh: &Shell, source: &Path) -> Result<(), xshell::Error> {
+    let _push_guard = sh.push_dir(source);
+    cmd!(sh, "zip -r9X {source} .").run()
 }
 
-impl Error for StringError {}
-
-pub fn run_as_shell_in(
-    workdir: &Path,
-    shell: &str,
-    shell_flag: &str,
-    cmd: &str,
-) -> Result<(), Box<dyn Error>> {
-    println!("\n> {cmd}");
-
-    let output = Command::new(shell)
-        .args(&[shell_flag, cmd])
-        .stdout(Stdio::inherit())
-        .current_dir(workdir)
-        .spawn()?
-        .wait_with_output()?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(Box::new(StringError(format!(
-            "Command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))))
-    }
+pub fn unzip(sh: &Shell, source: &Path, destination: &Path) -> Result<(), xshell::Error> {
+    cmd!(sh, "unzip {source} -d {destination}").run()
 }
 
-pub fn run_in(workdir: &Path, cmd: &str) -> Result<(), Box<dyn Error>> {
-    let shell = if cfg!(windows) { "cmd" } else { "bash" };
-    let shell_flag = if cfg!(windows) { "/C" } else { "-c" };
+pub fn targz(sh: &Shell, source: &Path) -> Result<(), xshell::Error> {
+    let parent_dir = source.parent().unwrap();
+    let file_name = source.file_name().unwrap();
 
-    run_as_shell_in(workdir, shell, shell_flag, cmd)
+    cmd!(sh, "tar -czvf {source}.tar.gz -C {parent_dir} {file_name}").run()
 }
 
-pub fn run(cmd: &str) -> Result<(), Box<dyn Error>> {
-    run_in(&env::current_dir().unwrap(), cmd)
+pub fn download(sh: &Shell, url: &str, destination: &Path) -> Result<(), xshell::Error> {
+    cmd!(sh, "curl -L -o {destination} --url {url}").run()
 }
 
-// Bash can be invoked on Windows if WSL is installed
-pub fn run_as_bash_in(workdir: &Path, cmd: &str) -> Result<(), Box<dyn Error>> {
-    run_as_shell_in(workdir, "bash", "-c", cmd)
+pub fn download_and_extract_zip(
+    sh: &Shell,
+    url: &str,
+    destination: &Path,
+) -> Result<(), xshell::Error> {
+    let temp_dir_guard = sh.create_temp_dir()?;
+
+    let zip_file = temp_dir_guard.path().join("temp_download.zip");
+    download(sh, url, &zip_file)?;
+
+    sh.remove_path(destination).ok();
+    sh.create_dir(destination)?;
+    unzip(sh, &zip_file, destination)
 }
 
-pub fn run_without_shell(cmd: &str, args: &[&str]) -> Result<(), Box<dyn Error>> {
-    println!(
-        "\n> {}",
-        args.iter().fold(String::from(cmd), |s, arg| s + " " + arg)
-    );
-    let output = Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::inherit())
-        .spawn()?
-        .wait_with_output()?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(Box::new(StringError(format!(
-            "Command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))))
-    }
-}
-
-pub fn zip(source: &Path) -> Result<(), Box<dyn Error>> {
+pub fn date_utc_yyyymmdd(sh: &Shell) -> Result<String, xshell::Error> {
     if cfg!(windows) {
-        run_without_shell(
-            "powershell",
-            &[
-                "Compress-Archive",
-                &source.to_string_lossy(),
-                &format!("{}.zip", source.to_string_lossy()),
-            ],
+        cmd!(
+            sh,
+            "powershell (Get-Date).ToUniversalTime().ToString(\"yyyy.MM.dd\")"
         )
+        .read()
     } else {
-        run_without_shell(
-            "zip",
-            &[
-                "-r",
-                &format!("{}.zip", source.to_string_lossy()),
-                &source.to_string_lossy(),
-            ],
-        )
+        cmd!(sh, "date -u +%Y.%m.%d").read()
     }
 }
 
-pub fn unzip(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
-    if cfg!(windows) {
-        run_without_shell(
-            "powershell",
-            &[
-                "Expand-Archive",
-                &source.to_string_lossy(),
-                &destination.to_string_lossy(),
-            ],
-        )
-    } else {
-        run_without_shell(
-            "unzip",
-            &[
-                &source.to_string_lossy(),
-                "-d",
-                &destination.to_string_lossy(),
-            ],
-        )
+pub fn copy_recursive(sh: &Shell, source_dir: &Path, dest_dir: &Path) -> Result<(), xshell::Error> {
+    sh.create_dir(dest_dir)?;
+
+    for path in sh.read_dir(source_dir)? {
+        let dest_path = dest_dir.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_recursive(sh, &path, &dest_path)?;
+        } else {
+            sh.copy_file(path, dest_path)?;
+        }
     }
-}
 
-pub fn download(url: &str, destination: &Path) -> Result<(), Box<dyn Error>> {
-    run_without_shell(
-        "curl",
-        &["-L", "-o", &destination.to_string_lossy(), "--url", url],
-    )
-}
-
-pub fn date_utc_yyyymmdd() -> String {
-    let output = if cfg!(windows) {
-        Command::new("powershell")
-            .arg("(Get-Date).ToUniversalTime().ToString(\"yyyy.MM.dd\")")
-            .output()
-            .unwrap()
-    } else {
-        Command::new("date")
-            .args(&["-u", "+%Y.%m.%d"])
-            .output()
-            .unwrap()
-    };
-
-    String::from_utf8_lossy(&output.stdout)
-        .as_ref()
-        .to_owned()
-        .replace('\r', "")
-        .replace('\n', "")
+    Ok(())
 }

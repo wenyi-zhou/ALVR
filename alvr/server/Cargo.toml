@@ -1,49 +1,34 @@
 [package]
 name = "alvr_server"
-version = "18.2.3"
-authors = ["alvr-org", "polygraphene", "Valve Corporation"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors = ["alvr-org", "Valve Corporation"]
 license = "MIT"
-edition = "2021"
-rust-version = "1.58"
 
 [lib]
 crate-type = ["cdylib"]
 
 [features]
-default = []
-bundled_ffmpeg = []
-gpl = []
+gpl = [] # Enable for FFmpeg support on Windows. Always enabled on Linux
 
 [dependencies]
-alvr_audio = { path = "../audio" }
-alvr_commands = { path = "../commands" }
-alvr_common = { path = "../common" }
-alvr_filesystem = { path = "../filesystem" }
-alvr_session = { path = "../session" }
-alvr_sockets = { path = "../sockets" }
-settings-schema = { path = "../settings-schema", features = [
-    "rename_camel_case",
-] }
+alvr_audio.workspace = true
+alvr_common.workspace = true
+alvr_events.workspace = true
+alvr_filesystem.workspace = true
+alvr_packets.workspace = true
+alvr_server_io.workspace = true
+alvr_session.workspace = true
+alvr_sockets.workspace = true
 
-# Basic utilities
-chrono = "0.4"
-parking_lot = "0.12"
 # Serialization
 bincode = "1"
 serde = "1"
 serde_json = "1"
-# Async
-futures = "0.3"
-tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "macros",
-    "process",
-    "io-util",
-    "net",
-    "fs",
-] }
-# Networking
+# Networking and async
 bytes = "1"
+futures = "0.3"
 headers = "0.3"
 hyper = { version = "0.14", features = [
     "http2",
@@ -53,23 +38,28 @@ hyper = { version = "0.14", features = [
     "tcp",
 ] }
 reqwest = "0.11"
-tokio-tungstenite = "0.17"
+rosc = "0.10"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "net",
+    "fs",
+] }
+tokio-tungstenite = "0.19"
 tokio-util = { version = "0.7", features = ["codec"] }
-# Graphics
-wgpu = "0.12"
-winit = "0.26" # needed to get the screen size
-# Browser interop
-tempfile = "3"
-alcro = "0.5.4"
-webbrowser = "0.6" # this is just for opening links in the default browser
 # Miscellaneous
+chrono = "0.4"
 fern = "0.6"
+spin_sleep = "1"
+sysinfo = { version = "0.29", default-features = false }
 
 [build-dependencies]
 alvr_filesystem = { path = "../filesystem" }
-bindgen = "0.59"
+bindgen = "0.65"
 cc = { version = "1", features = ["parallel"] }
 walkdir = "2"
 
-[target.'cfg(unix)'.build-dependencies]
-pkg-config = "0.3.9"
+[target.'cfg(target_os = "linux")'.build-dependencies]
+pkg-config = "0.3"

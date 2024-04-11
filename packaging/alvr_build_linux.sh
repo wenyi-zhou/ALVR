@@ -85,6 +85,7 @@ Arguments:
             WARNING: This does NOT affect Fedora server builds
             rustup.rs       rustup.rs script        [RUNNING UNREVIEWED ONLINE SCRIPTS IS UNRECOMMENDED]
             snapd           Snapcraft package       [Default]
+        --no-nvidia         Use when NOT using an Nvidia GPU, used only with Debian-based platforms
 
 Example: $(basename "${0}") server --build-only --server-args='--release --no-nvidia'
 HELPME
@@ -135,7 +136,7 @@ main() {
         # Get the absolute directory the script is running in, and add the repo name
         repoDir="$(dirname "$(realpath "${0}")")/$(basename "${repo}")"
     fi
-    buildDir="${repoDir}/build/alvr_server_linux/"
+    buildDir="${repoDir}/build/alvr_streamer_linux/"
 
     # We need to clone either way for distro-specific bash functions and deb control file
     maybe_clone || log critical 'Unable to clone repository!' 9
@@ -166,7 +167,7 @@ main() {
             fi
         ;;
         'server')
-            log info "Preparing ${PRETTY_NAME} (${ID}) to build ALVR server${kwArgs['--server-args']:+" with arguments: ${kwArgs['--server-args']}"}"
+            log info "Preparing ${PRETTY_NAME} (${ID}) to build ALVR server${kwArgs['--server-args']:+" with arguments: ${kwArgs['--server-args']} and"} with${kwArgs['--no-nvidia']+"out"} NVENC Support"
             if [ "${kwArgs['--build-only']}" != '' ] && build_"${ID}"_server; then
                 log info "${PRETTY_NAME} (${ID}) package built successfully."
             elif [ "${kwArgs['--build-only']}" != '' ]; then

@@ -4,29 +4,37 @@
 #include <mutex>
 #include <optional>
 
-void PoseHistory::OnPoseUpdated(const TrackingInfo &info) {
+void PoseHistory::OnPoseUpdated(uint64_t targetTimestampNs, FfiDeviceMotion motion) {
 	// Put pose history buffer
 	TrackingHistoryFrame history;
-	history.info = info;
+	history.targetTimestampNs = targetTimestampNs;
+	history.motion = motion;
 
-
-	HmdMatrix_QuatToMat(info.HeadPose_Pose_Orientation.w,
-		info.HeadPose_Pose_Orientation.x,
-		info.HeadPose_Pose_Orientation.y,
-		info.HeadPose_Pose_Orientation.z,
+	HmdMatrix_QuatToMat(motion.orientation.w,
+		motion.orientation.x,
+		motion.orientation.y,
+		motion.orientation.z,
 		&history.rotationMatrix);
 
-	Debug("Rotation Matrix=(%f, %f, %f, %f) (%f, %f, %f, %f) (%f, %f, %f, %f)\n"
-		, history.rotationMatrix.m[0][0], history.rotationMatrix.m[0][1], history.rotationMatrix.m[0][2], history.rotationMatrix.m[0][3]
-		, history.rotationMatrix.m[1][0], history.rotationMatrix.m[1][1], history.rotationMatrix.m[1][2], history.rotationMatrix.m[1][3]
-		, history.rotationMatrix.m[2][0], history.rotationMatrix.m[2][1], history.rotationMatrix.m[2][2], history.rotationMatrix.m[2][3]);
-
 	std::unique_lock<std::mutex> lock(m_mutex);
+	if (!m_transformIdentity) {
+		vr::HmdMatrix34_t rotation = {};
+		for (int i = 0; i < 3; ++i) {
+			for (int j = 0; j < 3; ++j) {
+				rotation.m[j][i] = 0;
+				for (int k = 0; k < 3; ++k) {
+					rotation.m[j][i] += history.rotationMatrix.m[k][i] * m_transform.m[j][k];
+				}
+			}
+		}
+		history.rotationMatrix = rotation;
+	}
+
 	if (m_poseBuffer.size() == 0) {
 		m_poseBuffer.push_back(history);
 	}
 	else {
-		if (m_poseBuffer.back().info.targetTimestampNs != info.targetTimestampNs) {
+		if (m_poseBuffer.back().targetTimestampNs != targetTimestampNs) {
 			// New track info
 			m_poseBuffer.push_back(history);
 		}
@@ -40,6 +48,9 @@ void PoseHistory::OnPoseUpdated(const TrackingInfo &info) {
 std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetBestPoseMatch(const vr::HmdMatrix34_t &pose) const
 {
 	std::unique_lock<std::mutex> lock(m_mutex);
+	if (m_transformUpdating && !m_poseBuffer.empty()) {
+		return m_poseBuffer.back();
+	}
 	float minDiff = 100000;
 	auto minIt = m_poseBuffer.begin();
 	for (auto it = m_poseBuffer.begin(); it != m_poseBuffer.end(); ++it) {
@@ -52,7 +63,6 @@ std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetBestPoseMatch(c
 				distance += pow(it->rotationMatrix.m[j][i] - pose.m[j][i], 2);
 			}
 		}
-		//LogDriver("diff %f %llu", distance, it->info.FrameIndex);
 		if (minDiff > distance) {
 			minIt = it;
 			minDiff = distance;
@@ -64,13 +74,37 @@ std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetBestPoseMatch(c
 	return {};
 }
 
-std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetPoseAt(uint64_t client_timestamp_ns) const
+std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetPoseAt(uint64_t timestampNs) const
 {
 	std::unique_lock<std::mutex> lock(m_mutex);
 	for (auto it = m_poseBuffer.rbegin(), end = m_poseBuffer.rend() ; it != end ; ++it)
 	{
-		if (it->info.targetTimestampNs == client_timestamp_ns)
+		if (it->targetTimestampNs == timestampNs)
 			return *it;
 	}
 	return {};
+}
+
+void PoseHistory::SetTransformUpdating()
+{
+	std::unique_lock<std::mutex> lock(m_mutex);
+	m_transformUpdating = true;
+}
+
+void PoseHistory::SetTransform(const vr::HmdMatrix34_t &transform)
+{
+	std::unique_lock<std::mutex> lock(m_mutex);
+	m_transform = transform;
+	m_transformUpdating = false;
+	m_poseBuffer.clear();
+
+	for (int i = 0; i < 3; ++i) {
+		for (int j = 0; j < 3; ++j) {
+			if (transform.m[i][j] != (i == j ? 1 : 0)) {
+				m_transformIdentity = false;
+				return;
+			}
+		}
+	}
+	m_transformIdentity = true;
 }

@@ -225,7 +225,7 @@ bool FrameRender::Startup()
 	//
 
 	// BlendState for first layer.
-	// Some VR apps (like StreamVR Home beta) submit the texture that alpha is zero on all pixels.
+	// Some VR apps (like SteamVR Home beta) submit the texture that alpha is zero on all pixels.
 	// So we need to ignore alpha of first layer.
 	D3D11_BLEND_DESC BlendDesc;
 	ZeroMemory(&BlendDesc, sizeof(BlendDesc));
@@ -367,9 +367,6 @@ bool FrameRender::RenderFrame(ID3D11Texture2D *pTexture[][2], vr::VRTextureBound
 
 		D3D11_TEXTURE2D_DESC srcDesc;
 		textures[0]->GetDesc(&srcDesc);
-
-		Debug("RenderFrame layer=%d/%d %dx%d %d%s%s\n", i, layerCount, srcDesc.Width, srcDesc.Height, srcDesc.Format
-			, recentering ? L" (recentering)" : L"", !message.empty() ? L" (message)" : L"");
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
 		SRVDesc.Format = srcDesc.Format;

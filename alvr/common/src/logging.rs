@@ -1,14 +1,49 @@
+use backtrace::Backtrace;
+use serde::{Deserialize, Serialize};
+use settings_schema::SettingsSchema;
 use std::{fmt::Display, future::Future};
+
+#[derive(
+    SettingsSchema, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub enum LogSeverity {
+    Error = 3,
+    Warning = 2,
+    Info = 1,
+    Debug = 0,
+}
+
+impl LogSeverity {
+    pub fn from_log_level(level: log::Level) -> Self {
+        match level {
+            log::Level::Error => LogSeverity::Error,
+            log::Level::Warn => LogSeverity::Warning,
+            log::Level::Info => LogSeverity::Info,
+            log::Level::Debug | log::Level::Trace => LogSeverity::Debug,
+        }
+    }
+
+    pub fn into_log_level(self) -> log::Level {
+        match self {
+            LogSeverity::Error => log::Level::Error,
+            LogSeverity::Warning => log::Level::Warn,
+            LogSeverity::Info => log::Level::Info,
+            LogSeverity::Debug => log::Level::Debug,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LogEntry {
+    pub severity: LogSeverity,
+    pub content: String,
+}
 
 pub fn set_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
-        let message = panic_info
-            .payload()
-            .downcast_ref::<&str>()
-            .unwrap_or(&"Unavailable");
         let err_str = format!(
-            "Message: {message:?}\nBacktrace:\n{:?}",
-            backtrace::Backtrace::new()
+            "What happened:\n{panic_info}\n\nBacktrace:\n{:?}",
+            Backtrace::new()
         );
 
         log::error!("{err_str}");
@@ -51,11 +86,10 @@ fn show_e_block<E: Display>(e: E, blocking: bool) {
     {
         // Store the last error shown in a message box. Do not open a new message box if the content
         // of the error has not changed
+        use once_cell::sync::Lazy;
         use parking_lot::Mutex;
 
-        lazy_static::lazy_static! {
-            static ref LAST_MESSAGEBOX_ERROR: Mutex<String> = Mutex::new("".into());
-        }
+        static LAST_MESSAGEBOX_ERROR: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("".into()));
 
         let err_string = e.to_string();
         let last_messagebox_error_ref = &mut *LAST_MESSAGEBOX_ERROR.lock();
@@ -117,30 +151,49 @@ macro_rules! fmt_e {
 }
 
 #[macro_export]
-macro_rules! trace_str {
+macro_rules! err {
     () => {
-        format!("At {}:{}", file!(), line!())
-    };
-}
-
-#[macro_export]
-macro_rules! trace_err {
-    ($res:expr) => {
-        $res.map_err(|e| format!("{}: {e}", trace_str!()))
+        |e| format!("At {}:{}: {e}", file!(), line!())
     };
 }
 
 // trace_err variant for errors that do not implement fmt::Display
 #[macro_export]
-macro_rules! trace_err_dbg {
-    ($res:expr) => {
-        $res.map_err(|e| format!("{}: {e:?}", trace_str!()))
+macro_rules! err_dbg {
+    () => {
+        |e| format!("At {}:{}: {e:?}", file!(), line!())
     };
 }
 
 #[macro_export]
-macro_rules! trace_none {
-    ($res:expr) => {
-        $res.ok_or_else(|| trace_str!())
+macro_rules! enone {
+    () => {
+        || format!("At {}:{}", file!(), line!())
+    };
+}
+
+#[macro_export]
+macro_rules! int_fmt_e {
+    ($($args:tt)+) => {
+        Err(InterruptibleError::Other(format!($($args)+)))
+    };
+}
+
+#[macro_export]
+macro_rules! int_e {
+    () => {
+        |e| match e {
+            InterruptibleError::Interrupted => InterruptibleError::Interrupted,
+            InterruptibleError::Other(e) => {
+                InterruptibleError::Other(format!("At {}:{}: {e}", file!(), line!()))
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! to_int_e {
+    () => {
+        |e| InterruptibleError::Other(format!("At {}:{}: {e}", file!(), line!()))
     };
 }

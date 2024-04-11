@@ -5,40 +5,86 @@
 // bytes while still handling the additional byte buffer with zero copies and extra allocations.
 
 mod tcp;
-mod throttled_udp;
 mod udp;
 
 use alvr_common::prelude::*;
-use alvr_session::SocketProtocol;
+use alvr_session::{SocketBufferSize, SocketProtocol};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::SinkExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
     marker::PhantomData,
+    mem,
     net::IpAddr,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
 use tcp::{TcpStreamReceiveSocket, TcpStreamSendSocket};
-use throttled_udp::{ThrottledUdpStreamReceiveSocket, ThrottledUdpStreamSendSocket};
 use tokio::net;
 use tokio::sync::{mpsc, Mutex};
 use udp::{UdpStreamReceiveSocket, UdpStreamSendSocket};
 
-// todo: when const_generics reaches stable, convert this to an enum
-pub type StreamId = u16;
+pub fn set_socket_buffers(
+    socket: &socket2::Socket,
+    send_buffer_bytes: SocketBufferSize,
+    recv_buffer_bytes: SocketBufferSize,
+) -> StrResult {
+    info!(
+        "Initial socket buffer size: send: {}B, recv: {}B",
+        socket.send_buffer_size().map_err(err!())?,
+        socket.recv_buffer_size().map_err(err!())?
+    );
+
+    {
+        let maybe_size = match send_buffer_bytes {
+            SocketBufferSize::Default => None,
+            SocketBufferSize::Maximum => Some(u32::MAX),
+            SocketBufferSize::Custom(size) => Some(size),
+        };
+
+        if let Some(size) = maybe_size {
+            if let Err(e) = socket.set_send_buffer_size(size as usize) {
+                info!("Error setting socket send buffer: {e}");
+            } else {
+                info!(
+                    "Set socket send buffer succeeded: {}",
+                    socket.send_buffer_size().map_err(err!())?
+                );
+            }
+        }
+    }
+
+    {
+        let maybe_size = match recv_buffer_bytes {
+            SocketBufferSize::Default => None,
+            SocketBufferSize::Maximum => Some(u32::MAX),
+            SocketBufferSize::Custom(size) => Some(size),
+        };
+
+        if let Some(size) = maybe_size {
+            if let Err(e) = socket.set_recv_buffer_size(size as usize) {
+                info!("Error setting socket recv buffer: {e}");
+            } else {
+                info!(
+                    "Set socket recv buffer succeeded: {}",
+                    socket.recv_buffer_size().map_err(err!())?
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Clone)]
 enum StreamSendSocket {
     Udp(UdpStreamSendSocket),
-    ThrottledUdp(ThrottledUdpStreamSendSocket),
     Tcp(TcpStreamSendSocket),
 }
 
 enum StreamReceiveSocket {
     Udp(UdpStreamReceiveSocket),
-    ThrottledUdp(ThrottledUdpStreamReceiveSocket),
     Tcp(TcpStreamReceiveSocket),
 }
 
@@ -67,154 +113,228 @@ impl Drop for SendBufferLock<'_> {
     }
 }
 
-pub struct SenderBuffer<T> {
-    inner: BytesMut,
-    offset: usize,
-    _phantom: PhantomData<T>,
-}
-
-impl<T> SenderBuffer<T> {
-    // Get the editable part of the buffer (the header part is excluded). The returned buffer can
-    // be grown at zero-cost until `preferred_max_buffer_size` (set with send_buffer()) is reached.
-    // After that a reallocation will be needed but there will be no other side effects.
-    pub fn get_mut(&mut self) -> SendBufferLock {
-        let buffer_bytes = self.inner.split_off(self.offset);
-        SendBufferLock {
-            header_bytes: &mut self.inner,
-            buffer_bytes,
-        }
-    }
-}
-
+#[derive(Clone)]
 pub struct StreamSender<T> {
-    stream_id: StreamId,
+    stream_id: u16,
+    max_packet_size: usize,
     socket: StreamSendSocket,
+    header_buffer: Vec<u8>,
     // if the packet index overflows the worst that happens is a false positive packet loss
     next_packet_index: u32,
     _phantom: PhantomData<T>,
 }
 
-impl<T> StreamSender<T> {
-    // The buffer is moved into the method. There is no way of reusing the same buffer twice without
-    // extra copies/allocations
-    pub async fn send_buffer(&mut self, mut buffer: SenderBuffer<T>) -> StrResult {
-        buffer.inner[2..6].copy_from_slice(&self.next_packet_index.to_be_bytes());
-        self.next_packet_index += 1;
+impl<T: Serialize> StreamSender<T> {
+    async fn send_buffer(&self, buffer: BytesMut) {
+        match &self.socket {
+            StreamSendSocket::Udp(socket) => socket
+                .inner
+                .lock()
+                .await
+                .feed((buffer.freeze(), socket.peer_addr))
+                .await
+                .map_err(err!())
+                .ok(),
+            StreamSendSocket::Tcp(socket) => socket
+                .lock()
+                .await
+                .feed(buffer.freeze())
+                .await
+                .map_err(err!())
+                .ok(),
+        };
+    }
+
+    pub async fn send(&mut self, header: &T, payload_buffer: Vec<u8>) -> StrResult {
+        // packet layout:
+        // [ 2B (stream ID) | 4B (packet index) | 4B (packet shard count) | 4B (shard index)]
+        // this escluses length delimited coding, which is handled by the TCP backend
+        const OFFSET: usize = 2 + 4 + 4 + 4;
+        let max_shard_data_size = self.max_packet_size - OFFSET;
+
+        let header_size = bincode::serialized_size(header).map_err(err!()).unwrap() as usize;
+        self.header_buffer.clear();
+        if self.header_buffer.capacity() < header_size {
+            // If the buffer is empty, with this call we request a capacity of "header_size".
+            self.header_buffer.reserve(header_size);
+        }
+        bincode::serialize_into(&mut self.header_buffer, header)
+            .map_err(err!())
+            .unwrap();
+        let header_shards = self.header_buffer.chunks(max_shard_data_size);
+
+        let payload_shards = payload_buffer.chunks(max_shard_data_size);
+
+        let total_shards_count = payload_shards.len() + header_shards.len();
+        let mut shards_buffer = BytesMut::with_capacity(
+            header_size + payload_buffer.len() + total_shards_count * OFFSET,
+        );
+
+        for (shard_index, shard) in header_shards.chain(payload_shards).enumerate() {
+            shards_buffer.put_u16(self.stream_id);
+            shards_buffer.put_u32(self.next_packet_index);
+            shards_buffer.put_u32(total_shards_count as _);
+            shards_buffer.put_u32(shard_index as u32);
+            shards_buffer.put_slice(shard);
+            self.send_buffer(shards_buffer.split()).await;
+        }
 
         match &self.socket {
-            StreamSendSocket::Udp(socket) => trace_err!(
-                socket
-                    .inner
-                    .lock()
-                    .await
-                    .send((buffer.inner.freeze(), socket.peer_addr))
-                    .await
-            ),
-            StreamSendSocket::Tcp(socket) => {
-                trace_err!(socket.lock().await.send(buffer.inner.freeze()).await)
+            StreamSendSocket::Udp(socket) => {
+                socket.inner.lock().await.flush().await.map_err(err!())?;
             }
-            StreamSendSocket::ThrottledUdp(socket) => {
-                trace_err!(socket.send(buffer.inner.freeze()).await)
-            }
+            StreamSendSocket::Tcp(socket) => socket.lock().await.flush().await.map_err(err!())?,
+        }
+
+        self.next_packet_index += 1;
+
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct ReceiverBuffer<T> {
+    inner: BytesMut,
+    had_packet_loss: bool,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> ReceiverBuffer<T> {
+    pub fn new() -> Self {
+        Self {
+            inner: BytesMut::new(),
+            had_packet_loss: false,
+            _phantom: PhantomData,
         }
     }
-}
 
-impl<T: Serialize> StreamSender<T> {
-    pub fn new_buffer(
-        &self,
-        header: &T,
-        preferred_max_buffer_size: usize,
-    ) -> StrResult<SenderBuffer<T>> {
-        let header_size = trace_err!(bincode::serialized_size(header))?;
-        // the first two bytes are for the stream ID
-        let offset = 2 + 4 + header_size as usize;
-
-        let mut buffer = BytesMut::with_capacity(offset + preferred_max_buffer_size);
-
-        buffer.put_u16(self.stream_id);
-
-        // make space for the packet index
-        buffer.put_u32(0);
-
-        let mut buffer_writer = buffer.writer();
-        trace_err!(bincode::serialize_into(&mut buffer_writer, header))?;
-        let buffer = buffer_writer.into_inner();
-
-        Ok(SenderBuffer {
-            inner: buffer,
-            offset,
-            _phantom: PhantomData,
-        })
-    }
-
-    pub async fn send(&mut self, packet: &T) -> StrResult {
-        self.send_buffer(self.new_buffer(packet, 0)?).await
+    pub fn had_packet_loss(&self) -> bool {
+        self.had_packet_loss
     }
 }
 
-enum StreamReceiverType {
-    Queue(mpsc::UnboundedReceiver<BytesMut>),
-    // QuicReliable(...)
-}
+impl<T: DeserializeOwned> ReceiverBuffer<T> {
+    pub fn get(&self) -> StrResult<(T, &[u8])> {
+        let mut data: &[u8] = &self.inner;
+        let header = bincode::deserialize_from(&mut data).map_err(err!())?;
 
-pub struct ReceivedPacket<T> {
-    pub header: T,
-    pub buffer: BytesMut,
-    pub had_packet_loss: bool,
+        Ok((header, data))
+    }
 }
 
 pub struct StreamReceiver<T> {
-    stream_id: StreamId,
-    receiver: StreamReceiverType,
+    receiver: mpsc::UnboundedReceiver<BytesMut>,
+    next_packet_shards: HashMap<usize, BytesMut>,
+    next_packet_shards_count: Option<usize>,
     next_packet_index: u32,
     _phantom: PhantomData<T>,
 }
 
+/// Get next packet reconstructing from shards. It can store at max shards from two packets; if the
+/// reordering entropy is too high, packets will never be successfully reconstructed.
 impl<T: DeserializeOwned> StreamReceiver<T> {
-    pub async fn recv(&mut self) -> StrResult<ReceivedPacket<T>> {
-        let mut bytes = match &mut self.receiver {
-            StreamReceiverType::Queue(receiver) => trace_none!(receiver.recv().await)?,
-        };
+    pub async fn recv_buffer(&mut self, buffer: &mut ReceiverBuffer<T>) -> StrResult {
+        buffer.had_packet_loss = false;
 
-        let packet_index = bytes.get_u32();
-        let had_packet_loss = packet_index != self.next_packet_index;
-        self.next_packet_index = packet_index + 1;
+        loop {
+            let current_packet_index = self.next_packet_index;
+            self.next_packet_index += 1;
 
-        let mut bytes_reader = bytes.reader();
-        let header = trace_err!(bincode::deserialize_from(&mut bytes_reader))?;
-        let buffer = bytes_reader.into_inner();
+            let mut current_packet_shards =
+                HashMap::with_capacity(self.next_packet_shards.capacity());
+            mem::swap(&mut current_packet_shards, &mut self.next_packet_shards);
 
-        // At this point, "buffer" does not include the header anymore
-        Ok(ReceivedPacket {
-            header,
-            buffer,
-            had_packet_loss,
-        })
+            let mut current_packet_shards_count = self.next_packet_shards_count.take();
+
+            loop {
+                if let Some(shards_count) = current_packet_shards_count {
+                    if current_packet_shards.len() >= shards_count {
+                        buffer.inner.clear();
+
+                        for i in 0..shards_count {
+                            if let Some(shard) = current_packet_shards.get(&i) {
+                                buffer.inner.put_slice(shard);
+                            } else {
+                                error!("Cannot find shard with given index!");
+                                buffer.had_packet_loss = true;
+
+                                self.next_packet_shards.clear();
+
+                                break;
+                            }
+                        }
+
+                        return Ok(());
+                    }
+                }
+
+                let mut shard = self.receiver.recv().await.ok_or_else(enone!())?;
+
+                let shard_packet_index = shard.get_u32();
+                let shards_count = shard.get_u32() as usize;
+                let shard_index = shard.get_u32() as usize;
+
+                if shard_packet_index == current_packet_index {
+                    current_packet_shards.insert(shard_index, shard);
+                    current_packet_shards_count = Some(shards_count);
+                } else if shard_packet_index >= self.next_packet_index {
+                    if shard_packet_index > self.next_packet_index {
+                        self.next_packet_shards.clear();
+                    }
+
+                    self.next_packet_shards.insert(shard_index, shard);
+                    self.next_packet_shards_count = Some(shards_count);
+                    self.next_packet_index = shard_packet_index;
+
+                    if shard_packet_index > self.next_packet_index
+                        || self.next_packet_shards.len() == shards_count
+                    {
+                        debug!("Skipping to next packet. Signaling packet loss.");
+                        buffer.had_packet_loss = true;
+                        break;
+                    }
+                }
+                // else: ignore old shard
+            }
+        }
+    }
+
+    pub async fn recv_header_only(&mut self) -> StrResult<T> {
+        let mut buffer = ReceiverBuffer::new();
+        self.recv_buffer(&mut buffer).await?;
+
+        Ok(buffer.get()?.0)
     }
 }
 
 pub enum StreamSocketBuilder {
     Tcp(net::TcpListener),
     Udp(net::UdpSocket),
-    ThrottledUdp(net::UdpSocket),
 }
 
 impl StreamSocketBuilder {
     pub async fn listen_for_server(
         port: u16,
         stream_socket_config: SocketProtocol,
+        send_buffer_bytes: SocketBufferSize,
+        recv_buffer_bytes: SocketBufferSize,
     ) -> StrResult<Self> {
         Ok(match stream_socket_config {
-            SocketProtocol::Udp => StreamSocketBuilder::Udp(udp::bind(port).await?),
-            SocketProtocol::Tcp => StreamSocketBuilder::Tcp(tcp::listen_for_server(port).await?),
-            SocketProtocol::ThrottledUdp { .. } => {
-                StreamSocketBuilder::ThrottledUdp(throttled_udp::listen_for_server(port).await?)
-            }
+            SocketProtocol::Udp => StreamSocketBuilder::Udp(
+                udp::bind(port, send_buffer_bytes, recv_buffer_bytes).await?,
+            ),
+            SocketProtocol::Tcp => StreamSocketBuilder::Tcp(
+                tcp::bind(port, send_buffer_bytes, recv_buffer_bytes).await?,
+            ),
         })
     }
 
-    pub async fn accept_from_server(self, server_ip: IpAddr, port: u16) -> StrResult<StreamSocket> {
+    pub async fn accept_from_server(
+        self,
+        server_ip: IpAddr,
+        port: u16,
+        max_packet_size: usize,
+    ) -> StrResult<StreamSocket> {
         let (send_socket, receive_socket) = match self {
             StreamSocketBuilder::Udp(socket) => {
                 let (send_socket, receive_socket) = udp::connect(socket, server_ip, port).await?;
@@ -231,17 +351,10 @@ impl StreamSocketBuilder {
                     StreamReceiveSocket::Tcp(receive_socket),
                 )
             }
-            StreamSocketBuilder::ThrottledUdp(socket) => {
-                let (send_socket, receive_socket) =
-                    throttled_udp::accept_from_server(socket, server_ip, port).await?;
-                (
-                    StreamSendSocket::ThrottledUdp(send_socket),
-                    StreamReceiveSocket::ThrottledUdp(receive_socket),
-                )
-            }
         };
 
         Ok(StreamSocket {
+            max_packet_size,
             send_socket,
             receive_socket: Arc::new(Mutex::new(Some(receive_socket))),
             packet_queues: Arc::new(Mutex::new(HashMap::new())),
@@ -252,40 +365,32 @@ impl StreamSocketBuilder {
         client_ip: IpAddr,
         port: u16,
         protocol: SocketProtocol,
-        video_byterate: u32,
+        send_buffer_bytes: SocketBufferSize,
+        recv_buffer_bytes: SocketBufferSize,
+        max_packet_size: usize,
     ) -> StrResult<StreamSocket> {
         let (send_socket, receive_socket) = match protocol {
             SocketProtocol::Udp => {
-                let sock = udp::bind(port).await?;
-                let (send_socket, receive_socket) = udp::connect(sock, client_ip, port).await?;
+                let socket = udp::bind(port, send_buffer_bytes, recv_buffer_bytes).await?;
+                let (send_socket, receive_socket) = udp::connect(socket, client_ip, port).await?;
                 (
                     StreamSendSocket::Udp(send_socket),
                     StreamReceiveSocket::Udp(receive_socket),
                 )
             }
             SocketProtocol::Tcp => {
-                let (send_socket, receive_socket) = tcp::connect_to_client(client_ip, port).await?;
+                let (send_socket, receive_socket) =
+                    tcp::connect_to_client(client_ip, port, send_buffer_bytes, recv_buffer_bytes)
+                        .await?;
                 (
                     StreamSendSocket::Tcp(send_socket),
                     StreamReceiveSocket::Tcp(receive_socket),
                 )
             }
-            SocketProtocol::ThrottledUdp { bitrate_multiplier } => {
-                let (send_socket, receive_socket) = throttled_udp::connect_to_client(
-                    client_ip,
-                    port,
-                    video_byterate,
-                    bitrate_multiplier,
-                )
-                .await?;
-                (
-                    StreamSendSocket::ThrottledUdp(send_socket),
-                    StreamReceiveSocket::ThrottledUdp(receive_socket),
-                )
-            }
         };
 
         Ok(StreamSocket {
+            max_packet_size,
             send_socket,
             receive_socket: Arc::new(Mutex::new(Some(receive_socket))),
             packet_queues: Arc::new(Mutex::new(HashMap::new())),
@@ -294,31 +399,32 @@ impl StreamSocketBuilder {
 }
 
 pub struct StreamSocket {
+    max_packet_size: usize,
     send_socket: StreamSendSocket,
     receive_socket: Arc<Mutex<Option<StreamReceiveSocket>>>,
-    packet_queues: Arc<Mutex<HashMap<StreamId, mpsc::UnboundedSender<BytesMut>>>>,
+    packet_queues: Arc<Mutex<HashMap<u16, mpsc::UnboundedSender<BytesMut>>>>,
 }
 
 impl StreamSocket {
-    pub async fn request_stream<T>(&self, stream_id: StreamId) -> StrResult<StreamSender<T>> {
+    pub async fn request_stream<T>(&self, stream_id: u16) -> StrResult<StreamSender<T>> {
         Ok(StreamSender {
             stream_id,
+            max_packet_size: self.max_packet_size,
             socket: self.send_socket.clone(),
+            header_buffer: vec![],
             next_packet_index: 0,
             _phantom: PhantomData,
         })
     }
 
-    pub async fn subscribe_to_stream<T>(
-        &self,
-        stream_id: StreamId,
-    ) -> StrResult<StreamReceiver<T>> {
-        let (enqueuer, dequeuer) = mpsc::unbounded_channel();
-        self.packet_queues.lock().await.insert(stream_id, enqueuer);
+    pub async fn subscribe_to_stream<T>(&self, stream_id: u16) -> StrResult<StreamReceiver<T>> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.packet_queues.lock().await.insert(stream_id, sender);
 
         Ok(StreamReceiver {
-            stream_id,
-            receiver: StreamReceiverType::Queue(dequeuer),
+            receiver,
+            next_packet_shards: HashMap::new(),
+            next_packet_shards_count: None,
             next_packet_index: 0,
             _phantom: PhantomData,
         })
@@ -331,9 +437,6 @@ impl StreamSocket {
             }
             StreamReceiveSocket::Tcp(socket) => {
                 tcp::receive_loop(socket, Arc::clone(&self.packet_queues)).await
-            }
-            StreamReceiveSocket::ThrottledUdp(socket) => {
-                throttled_udp::receive_loop(socket, Arc::clone(&self.packet_queues)).await
             }
         }
     }

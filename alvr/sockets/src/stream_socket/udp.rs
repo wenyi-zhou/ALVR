@@ -1,6 +1,6 @@
-use super::StreamId;
 use crate::{Ldc, LOCAL_IP};
 use alvr_common::prelude::*;
+use alvr_session::SocketBufferSize;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{
     stream::{SplitSink, SplitStream},
@@ -31,8 +31,19 @@ pub struct UdpStreamReceiveSocket {
     pub inner: SplitStream<UdpFramed<Ldc>>,
 }
 
-pub async fn bind(port: u16) -> StrResult<UdpSocket> {
-    trace_err!(UdpSocket::bind((LOCAL_IP, port)).await)
+// Create tokio socket, convert to socket2, apply settings, convert back to tokio. This is done to
+// let tokio set all the internal parameters it needs from the start.
+pub async fn bind(
+    port: u16,
+    send_buffer_bytes: SocketBufferSize,
+    recv_buffer_bytes: SocketBufferSize,
+) -> StrResult<UdpSocket> {
+    let socket = UdpSocket::bind((LOCAL_IP, port)).await.map_err(err!())?;
+    let socket = socket2::Socket::from(socket.into_std().map_err(err!())?);
+
+    super::set_socket_buffers(&socket, send_buffer_bytes, recv_buffer_bytes).ok();
+
+    UdpSocket::from_std(socket.into()).map_err(err!())
 }
 
 pub async fn connect(
@@ -58,10 +69,10 @@ pub async fn connect(
 
 pub async fn receive_loop(
     mut socket: UdpStreamReceiveSocket,
-    packet_enqueuers: Arc<Mutex<HashMap<StreamId, mpsc::UnboundedSender<BytesMut>>>>,
+    packet_enqueuers: Arc<Mutex<HashMap<u16, mpsc::UnboundedSender<BytesMut>>>>,
 ) -> StrResult {
     while let Some(maybe_packet) = socket.inner.next().await {
-        let (mut packet_bytes, address) = trace_err!(maybe_packet)?;
+        let (mut packet_bytes, address) = maybe_packet.map_err(err!())?;
 
         if address != socket.peer_addr {
             continue;
@@ -69,7 +80,7 @@ pub async fn receive_loop(
 
         let stream_id = packet_bytes.get_u16();
         if let Some(enqueuer) = packet_enqueuers.lock().await.get_mut(&stream_id) {
-            trace_err!(enqueuer.send(packet_bytes))?;
+            enqueuer.send(packet_bytes).map_err(err!())?;
         }
     }
 

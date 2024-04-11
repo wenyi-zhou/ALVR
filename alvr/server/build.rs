@@ -1,73 +1,19 @@
-use alvr_filesystem as afs;
-#[cfg(target_os = "linux")]
-use pkg_config;
 use std::{env, path::PathBuf};
 
-// this code must be executed BEFORE the actual cpp build when using bundled ffmpeg,
-// as it adds definitions and include flags
-// but AFTER the build in other cases because linker flags must appear after.
-#[cfg(target_os = "linux")]
-fn do_ffmpeg_pkg_config(build: &mut cc::Build) {
-    let ffmpeg_path = env::var("CARGO_MANIFEST_DIR").unwrap() + "/../../deps/linux/FFmpeg-n4.4/";
+fn get_ffmpeg_path() -> PathBuf {
+    let ffmpeg_path = alvr_filesystem::deps_dir()
+        .join(if cfg!(target_os = "linux") {
+            "linux"
+        } else {
+            "windows"
+        })
+        .join("ffmpeg");
 
-    #[cfg(feature = "bundled_ffmpeg")]
-    {
-        for lib in vec!["libavutil", "libavfilter", "libavcodec", "libswscale"] {
-            let path = ffmpeg_path.clone() + lib;
-            env::set_var(
-                "PKG_CONFIG_PATH",
-                env::var("PKG_CONFIG_PATH").map_or(path.clone(), |old| format!("{path}:{old}")),
-            );
-        }
+    if cfg!(target_os = "linux") {
+        ffmpeg_path.join("alvr_build")
+    } else {
+        ffmpeg_path
     }
-
-    let pkg = pkg_config::Config::new()
-        .cargo_metadata(cfg!(not(feature = "bundled_ffmpeg")))
-        .to_owned();
-    let avutil = pkg.probe("libavutil").unwrap();
-    let avfilter = pkg.probe("libavfilter").unwrap();
-    let avcodec = pkg.probe("libavcodec").unwrap();
-    let swscale = pkg.probe("libswscale").unwrap();
-
-    if cfg!(feature = "bundled_ffmpeg") {
-        build
-            .define("AVCODEC_MAJOR", avcodec.version.split(".").next().unwrap())
-            .define("AVUTIL_MAJOR", avutil.version.split(".").next().unwrap())
-            .define(
-                "AVFILTER_MAJOR",
-                avfilter.version.split(".").next().unwrap(),
-            )
-            .define("SWSCALE_MAJOR", swscale.version.split(".").next().unwrap());
-
-        build.include(ffmpeg_path);
-
-        // activate dlopen for libav libraries
-        build
-            .define("LIBRARY_LOADER_AVCODEC_LOADER_H_DLOPEN", None)
-            .define("LIBRARY_LOADER_AVUTIL_LOADER_H_DLOPEN", None)
-            .define("LIBRARY_LOADER_AVFILTER_LOADER_H_DLOPEN", None)
-            .define("LIBRARY_LOADER_SWSCALE_LOADER_H_DLOPEN", None);
-
-        println!("cargo:rustc-link-lib=dl");
-    }
-}
-
-#[cfg(all(windows, feature = "gpl"))]
-fn do_ffmpeg_windows_config(build: &mut cc::Build) {
-    let ffmpeg_dir = afs::deps_dir()
-        .join("windows")
-        .join("ffmpeg-n5.0-latest-win64-gpl-shared-5.0");
-
-    build.include(format!("{}/include", ffmpeg_dir.to_string_lossy()));
-
-    println!(
-        "cargo:rustc-link-search=native={}/lib",
-        ffmpeg_dir.to_string_lossy()
-    );
-    println!("cargo:rustc-link-lib=avcodec");
-    println!("cargo:rustc-link-lib=avutil");
-    println!("cargo:rustc-link-lib=avfilter");
-    println!("cargo:rustc-link-lib=swscale");
 }
 
 fn main() {
@@ -83,7 +29,11 @@ fn main() {
 
     let common_iter = walkdir::WalkDir::new("cpp")
         .into_iter()
-        .filter_entry(|entry| entry.file_name() != "tools" && entry.file_name() != "platform");
+        .filter_entry(|entry| {
+            entry.file_name() != "tools"
+                && entry.file_name() != "platform"
+                && (!cfg!(target_os = "macos") || entry.file_name() != "amf")
+        });
 
     let platform_iter = walkdir::WalkDir::new(platform).into_iter();
 
@@ -127,28 +77,64 @@ fn main() {
     // #[cfg(debug_assertions)]
     // build.define("ALVR_DEBUG_LOG", None);
 
-    #[cfg(all(target_os = "linux", feature = "bundled_ffmpeg"))]
-    do_ffmpeg_pkg_config(&mut build);
+    let use_ffmpeg = cfg!(feature = "gpl") || cfg!(target_os = "linux");
 
-    #[cfg(all(windows, feature = "gpl"))]
-    {
-        do_ffmpeg_windows_config(&mut build);
-        build.define("ALVR_GPL", None);
+    if use_ffmpeg {
+        let ffmpeg_path = get_ffmpeg_path();
+
+        assert!(ffmpeg_path.join("include").exists());
+        build.include(ffmpeg_path.join("include"));
     }
+
+    #[cfg(feature = "gpl")]
+    build.define("ALVR_GPL", None);
 
     build.compile("bindings");
 
-    #[cfg(all(target_os = "linux", not(feature = "bundled_ffmpeg")))]
-    do_ffmpeg_pkg_config(&mut build);
+    if use_ffmpeg {
+        let ffmpeg_path = get_ffmpeg_path();
+        let ffmpeg_lib_path = ffmpeg_path.join("lib");
+
+        assert!(ffmpeg_lib_path.exists());
+
+        println!(
+            "cargo:rustc-link-search=native={}",
+            ffmpeg_lib_path.to_string_lossy()
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            let ffmpeg_pkg_path = ffmpeg_lib_path.join("pkgconfig");
+            assert!(ffmpeg_pkg_path.exists());
+
+            let ffmpeg_pkg_path = ffmpeg_pkg_path.to_string_lossy().to_string();
+            env::set_var(
+                "PKG_CONFIG_PATH",
+                env::var("PKG_CONFIG_PATH").map_or(ffmpeg_pkg_path.clone(), |old| {
+                    format!("{ffmpeg_pkg_path}:{old}")
+                }),
+            );
+
+            let pkg = pkg_config::Config::new().statik(true).to_owned();
+
+            for lib in ["libavutil", "libavfilter", "libavcodec"] {
+                pkg.probe(lib).unwrap();
+            }
+        }
+        #[cfg(windows)]
+        for lib in ["avutil", "avfilter", "avcodec", "swscale"] {
+            println!("cargo:rustc-link-lib={lib}");
+        }
+    }
 
     bindgen::builder()
         .clang_arg("-xc++")
         .header("cpp/alvr_server/bindings.h")
         .derive_default(true)
         .generate()
-        .expect("bindings")
+        .unwrap()
         .write_to_file(out_dir.join("bindings.rs"))
-        .expect("bindings.rs");
+        .unwrap();
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -159,6 +145,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     {
         pkg_config::Config::new().probe("vulkan").unwrap();
+        pkg_config::Config::new().probe("x264").unwrap();
 
         // fail build if there are undefined symbols in final library
         println!("cargo:rustc-cdylib-link-arg=-Wl,--no-undefined");

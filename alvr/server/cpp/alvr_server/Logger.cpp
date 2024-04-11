@@ -20,7 +20,7 @@ void _log(const char *format, va_list args, void (*logFn)(const char *), bool dr
 #ifndef ALVR_DEBUG_LOG
 	if (driverLog)
 #endif
-		DriverLogVarArgs(format, args);
+		DriverLog(buf);
 }
 
 Exception MakeException(const char *format, ...)
@@ -69,4 +69,21 @@ void Debug(const char *format, ...)
 #else
 	(void)format;
 #endif
+}
+
+void LogPeriod(const char *tag, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+
+	char buf[1024];
+	int count = vsnprintf(buf, sizeof(buf), format, args);
+	if (count > (int)sizeof(buf))
+		count = (int)sizeof(buf);
+	if (count > 0 && buf[count - 1] == '\n')
+		buf[count - 1] = '\0';
+
+	LogPeriodically(tag, buf);
+
+	va_end(args);
 }
