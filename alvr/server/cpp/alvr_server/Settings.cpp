@@ -68,7 +68,9 @@ void Settings::Load() {
         m_usePreproc = config.get("use_preproc").get<bool>();
         m_preProcSigma = (uint32_t)config.get("preproc_sigma").get<int64_t>();
         m_preProcTor = (uint32_t)config.get("preproc_tor").get<int64_t>();
-        m_amdEncoderQualityPreset = (uint32_t)config.get("amd_encoder_quality_preset").get<int64_t>();
+        m_amdEncoderQualityPreset =
+            (uint32_t)config.get("amd_encoder_quality_preset").get<int64_t>();
+        m_amdBitrateCorruptionFix = (bool)config.get("amd_bitrate_corruption_fix").get<bool>();
         m_nvencQualityPreset = (uint32_t)config.get("nvenc_quality_preset").get<int64_t>();
         m_force_sw_encoding = config.get("force_sw_encoding").get<bool>();
         m_swThreadCount = (int32_t)config.get("sw_thread_count").get<int64_t>();
@@ -97,14 +99,16 @@ void Settings::Load() {
 
         m_enableViveTrackerProxy = config.get("enable_vive_tracker_proxy").get<bool>();
         m_TrackingRefOnly = config.get("tracking_ref_only").get<bool>();
-        m_enableLinuxVulkanAsync = config.get("linux_async_reprojection").get<bool>();
+        m_enableLinuxAsyncReprojection = config.get("linux_async_reprojection").get<bool>();
 
         m_enableControllers = config.get("controllers_enabled").get<bool>();
-        m_controllerMode = (int32_t)config.get("controllers_mode_idx").get<int64_t>();
-        m_overrideTriggerThreshold = config.get("override_trigger_threshold").get<bool>();
-        m_triggerThreshold = config.get("trigger_threshold").get<double>();
-        m_overrideGripThreshold = config.get("override_grip_threshold").get<bool>();
-        m_gripThreshold = config.get("grip_threshold").get<double>();
+        m_controllerIsTracker = config.get("controller_is_tracker").get<bool>();
+
+        m_constantBitrate = v.get("session_settings")
+                             .get("video")
+                             .get("bitrate")
+                             .get("mode")
+                             .get("variant").get<std::string>() == "ConstantMbps";
 
         Info("Render Target: %d %d\n", m_renderWidth, m_renderHeight);
         Info("Refresh Rate: %d\n", m_refreshRate);

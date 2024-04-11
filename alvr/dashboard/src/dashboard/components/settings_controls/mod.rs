@@ -1,6 +1,7 @@
 pub mod array;
 pub mod boolean;
 pub mod choice;
+pub mod collapsible;
 pub mod dictionary;
 pub mod help;
 pub mod notice;
@@ -11,16 +12,18 @@ pub mod reset;
 pub mod section;
 pub mod switch;
 pub mod text;
+pub mod up_down;
 pub mod vector;
 
 use alvr_packets::{PathSegment, PathValuePair};
 use alvr_session::settings_schema::SchemaNode;
 use eframe::egui::Ui;
 use serde_json as json;
+use std::collections::HashMap;
 
-const INDENTATION_STEP: f32 = 20.0;
+pub const INDENTATION_STEP: f32 = 20.0;
 
-fn set_single_value(
+fn get_single_value(
     nesting_info: &NestingInfo,
     leaf: PathSegment,
     new_value: json::Value,
@@ -41,10 +44,12 @@ fn grid_flow_inline(ui: &mut Ui, allow_inline: bool) {
     }
 }
 
-fn grid_flow_block(ui: &mut Ui, allow_inline: bool) {
-    if allow_inline {
-        ui.end_row();
-    }
+pub fn get_display_name(id: &str, strings: &HashMap<String, String>) -> String {
+    strings.get("display_name").cloned().unwrap_or_else(|| {
+        let mut chars = id.chars();
+        chars.next().unwrap().to_uppercase().collect::<String>()
+            + chars.as_str().replace('_', " ").as_str()
+    })
 }
 
 #[derive(Clone)]
@@ -62,15 +67,22 @@ pub enum SettingControl {
     Text(text::Control),
     Numeric(number::Control),
     Array(array::Control),
+    Vector(vector::Control),
+    Dictionary(dictionary::Control),
     None,
 }
 
 impl SettingControl {
     pub fn new(nesting_info: NestingInfo, schema: SchemaNode) -> Self {
         match schema {
-            SchemaNode::Section(entries) => {
-                Self::Section(section::Control::new(nesting_info, entries))
-            }
+            SchemaNode::Section {
+                entries,
+                gui_collapsible,
+            } => Self::Section(section::Control::new(
+                nesting_info,
+                entries,
+                gui_collapsible,
+            )),
             SchemaNode::Choice {
                 default,
                 variants,
@@ -101,8 +113,24 @@ impl SettingControl {
             SchemaNode::Array(schema_array) => {
                 Self::Array(array::Control::new(nesting_info, schema_array))
             }
-            // SchemaNode::Vector { default_element, default } => todo!(),
-            // SchemaNode::Dictionary { default_key, default_value, default } => todo!(),
+            SchemaNode::Vector {
+                default_element,
+                default,
+            } => Self::Vector(vector::Control::new(
+                nesting_info,
+                *default_element,
+                default,
+            )),
+            SchemaNode::Dictionary {
+                default_key,
+                default_value,
+                default,
+            } => Self::Dictionary(dictionary::Control::new(
+                nesting_info,
+                default_key,
+                *default_value,
+                default,
+            )),
             _ => Self::None,
         }
     }
@@ -123,6 +151,8 @@ impl SettingControl {
             Self::Text(control) => control.ui(ui, session_fragment, allow_inline),
             Self::Numeric(control) => control.ui(ui, session_fragment, allow_inline),
             Self::Array(control) => control.ui(ui, session_fragment, allow_inline),
+            Self::Vector(control) => control.ui(ui, session_fragment, allow_inline),
+            Self::Dictionary(control) => control.ui(ui, session_fragment, allow_inline),
             Self::None => {
                 grid_flow_inline(ui, allow_inline);
                 ui.add_enabled_ui(false, |ui| ui.label("Unimplemented UI"));

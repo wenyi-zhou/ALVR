@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dashboard;
-mod theme;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod data_sources;
@@ -23,7 +22,6 @@ use dashboard::Dashboard;
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     use alvr_common::ALVR_VERSION;
-    use alvr_packets::GpuVendor;
     use eframe::{egui, IconData, NativeOptions};
     use ico::IconDir;
     use std::{env, fs};
@@ -34,22 +32,32 @@ fn main() {
 
     {
         let mut data_manager = data_sources::get_local_data_source();
-        if data_manager
-            .get_gpu_vendors()
-            .iter()
-            .any(|vendor| matches!(vendor, GpuVendor::Nvidia))
+
+        data_manager.clean_client_list();
+
+        #[cfg(target_os = "linux")]
         {
-            data_manager
-                .session_mut()
-                .session_settings
-                .patches
-                .linux_async_reprojection = false;
+            let has_nvidia = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN,
+                dx12_shader_compiler: Default::default(),
+            })
+            .enumerate_adapters(wgpu::Backends::VULKAN)
+            .any(|adapter| adapter.get_info().vendor == 0x10de);
+
+            if has_nvidia {
+                data_manager
+                    .session_mut()
+                    .session_settings
+                    .patches
+                    .linux_async_reprojection = false;
+            }
         }
 
         if data_manager.session().server_version != *ALVR_VERSION {
             let mut session_ref = data_manager.session_mut();
             session_ref.server_version = ALVR_VERSION.clone();
             session_ref.client_connections.clear();
+            session_ref.session_settings.open_setup_wizard = true;
         }
 
         if data_manager
@@ -80,7 +88,7 @@ fn main() {
                 width: image.width(),
                 height: image.height(),
             }),
-            initial_window_size: Some(egui::vec2(900.0, 600.0)),
+            initial_window_size: Some(egui::vec2(870.0, 600.0)),
             centered: true,
             ..Default::default()
         },

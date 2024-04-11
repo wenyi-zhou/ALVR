@@ -52,17 +52,14 @@ impl Control {
 
         let session_switch_mut = session_fragment.as_object_mut().unwrap();
 
-        // todo: can this be written better?
-        let enabled_mut = if let json::Value::Bool(enabled) = &mut session_switch_mut["enabled"] {
-            enabled
-        } else {
+        let json::Value::Bool(enabled_mut) = &mut session_switch_mut["enabled"] else {
             unreachable!()
         };
 
         let mut request = None;
 
         fn get_request(nesting_info: &NestingInfo, enabled: bool) -> Option<PathValuePair> {
-            super::set_single_value(nesting_info, "enabled".into(), json::Value::Bool(enabled))
+            super::get_single_value(nesting_info, "enabled".into(), json::Value::Bool(enabled))
         }
 
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {

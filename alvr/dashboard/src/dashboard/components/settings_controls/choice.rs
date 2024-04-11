@@ -107,17 +107,12 @@ impl Control {
         super::grid_flow_inline(ui, allow_inline);
 
         let session_variants_mut = session_fragment.as_object_mut().unwrap();
-
-        // todo: can this be written better?
-        let variant_mut = if let json::Value::String(variant) = &mut session_variants_mut["variant"]
-        {
-            variant
-        } else {
+        let json::Value::String(variant_mut) = &mut session_variants_mut["variant"] else {
             unreachable!()
         };
 
         fn get_request(nesting_info: &NestingInfo, variant: &str) -> Option<PathValuePair> {
-            super::set_single_value(
+            super::get_single_value(
                 nesting_info,
                 "variant".into(),
                 json::Value::String(variant.to_owned()),
@@ -131,7 +126,7 @@ impl Control {
                     request = get_request(&self.nesting_info, variant_mut);
                 }
             } else if let Some(mut index) = self.variant_indices.get(variant_mut).cloned() {
-                let response = ComboBox::new(self.combobox_id, "").show_index(
+                let response = ComboBox::from_id_source(self.combobox_id).show_index(
                     ui,
                     &mut index,
                     self.variant_labels.len(),
@@ -141,9 +136,13 @@ impl Control {
                     *variant_mut = self.variant_labels[index].id.clone();
                     request = get_request(&self.nesting_info, variant_mut);
                 }
+
+                if cfg!(debug_assertions) {
+                    response.on_hover_text(&self.variant_labels[index].id);
+                }
             } else {
                 let mut index = 0;
-                let response = ComboBox::new(self.combobox_id, "").show_index(
+                let response = ComboBox::from_id_source(self.combobox_id).show_index(
                     ui,
                     &mut index,
                     self.variant_labels.len() + 1,

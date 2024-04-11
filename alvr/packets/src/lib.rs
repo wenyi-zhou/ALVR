@@ -2,7 +2,7 @@ use alvr_common::{
     glam::{UVec2, Vec2},
     DeviceMotion, Fov, LogEntry, LogSeverity, Pose,
 };
-use alvr_session::{CodecType, SessionDesc};
+use alvr_session::{CodecType, ConnectionState, SessionConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
@@ -54,7 +54,7 @@ pub enum ServerControlPacket {
     InitializeDecoder(DecoderInitializationConfig),
     Restarting,
     KeepAlive,
-    ServerPredictionAverage(Duration),
+    ServerPredictionAverage(Duration), // todo: remove
     Reserved(String),
     ReservedBuffer(Vec<u8>),
 }
@@ -90,7 +90,7 @@ pub enum ClientControlPacket {
     PlayspaceSync(Option<Vec2>),
     RequestIdr,
     KeepAlive,
-    StreamReady,
+    StreamReady, // This flag notifies the server the client streaming socket is ready listening
     ViewsConfig(ViewsConfig),
     Battery(BatteryPacket),
     VideoErrorReport, // legacy
@@ -136,12 +136,6 @@ pub struct Haptics {
 pub struct AudioDevicesList {
     pub output: Vec<String>,
     pub input: Vec<String>,
-}
-
-pub enum GpuVendor {
-    Nvidia,
-    Amd,
-    Other,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -193,6 +187,7 @@ pub enum ClientListAction {
     SetManualIps(Vec<IpAddr>),
     RemoveEntry,
     UpdateCurrentIp(Option<IpAddr>),
+    SetConnectionState(ConnectionState),
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -222,7 +217,7 @@ pub enum FirewallRulesAction {
 pub enum ServerRequest {
     Log(LogEntry),
     GetSession,
-    UpdateSession(Box<SessionDesc>),
+    UpdateSession(Box<SessionConfig>),
     SetValues(Vec<PathValuePair>),
     UpdateClientList {
         hostname: String,

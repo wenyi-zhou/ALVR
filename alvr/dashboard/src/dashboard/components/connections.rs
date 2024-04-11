@@ -1,9 +1,7 @@
-use crate::{
-    dashboard::ServerRequest,
-    theme::{self, log_colors},
-};
+use crate::dashboard::ServerRequest;
+use alvr_gui_common::theme::{self, log_colors};
 use alvr_packets::ClientListAction;
-use alvr_session::{ClientConnectionDesc, SessionDesc};
+use alvr_session::{ClientConnectionConfig, ConnectionState, SessionConfig};
 use eframe::{
     egui::{Frame, Grid, Layout, RichText, TextEdit, Ui, Window},
     emath::{Align, Align2},
@@ -18,8 +16,8 @@ struct EditPopupState {
 }
 
 pub struct ConnectionsTab {
-    new_clients: Option<Vec<(String, ClientConnectionDesc)>>,
-    trusted_clients: Option<Vec<(String, ClientConnectionDesc)>>,
+    new_clients: Option<Vec<(String, ClientConnectionConfig)>>,
+    trusted_clients: Option<Vec<(String, ClientConnectionConfig)>>,
     edit_popup_state: Option<EditPopupState>,
 }
 
@@ -32,7 +30,7 @@ impl ConnectionsTab {
         }
     }
 
-    pub fn update_client_list(&mut self, session: &SessionDesc) {
+    pub fn update_client_list(&mut self, session: &SessionConfig) {
         let (trusted_clients, untrusted_clients) =
             session
                 .client_connections
@@ -127,6 +125,23 @@ impl ConnectionsTab {
                                             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
                                         data.display_name
                                     ));
+                                    match data.connection_state {
+                                        ConnectionState::Disconnected => {
+                                            ui.colored_label(Color32::GRAY, "Disconnected")
+                                        }
+                                        ConnectionState::Connecting => ui
+                                            .colored_label(log_colors::WARNING_LIGHT, "Connecting"),
+                                        ConnectionState::Connected => {
+                                            ui.colored_label(theme::OK_GREEN, "Connected")
+                                        }
+                                        ConnectionState::Streaming => {
+                                            ui.colored_label(theme::OK_GREEN, "Streaming")
+                                        }
+                                        ConnectionState::Disconnecting { .. } => ui.colored_label(
+                                            log_colors::WARNING_LIGHT,
+                                            "Disconnecting",
+                                        ),
+                                    }
                                 });
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui.button("Remove").clicked() {
@@ -183,7 +198,11 @@ impl ConnectionsTab {
                         }
                     });
                     ui.columns(2, |ui| {
-                        if ui[0].button("Ok").clicked() {
+                        if ui[0].button("Cancel").clicked() {
+                            return;
+                        }
+
+                        if ui[1].button("Save").clicked() {
                             let manual_ips =
                                 state.ips.iter().filter_map(|s| s.parse().ok()).collect();
 
@@ -201,7 +220,7 @@ impl ConnectionsTab {
                                     action: ClientListAction::SetManualIps(manual_ips),
                                 });
                             }
-                        } else if !ui[1].button("Cancel").clicked() {
+                        } else {
                             self.edit_popup_state = Some(state);
                         }
                     })

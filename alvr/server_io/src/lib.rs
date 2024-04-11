@@ -6,10 +6,13 @@ pub use firewall::*;
 pub use openvr_drivers::*;
 pub use openvrpaths::*;
 
-use alvr_common::prelude::*;
+use alvr_common::{
+    anyhow::{bail, Result},
+    error, info,
+};
 use alvr_events::EventType;
-use alvr_packets::{AudioDevicesList, ClientListAction, GpuVendor, PathSegment, PathValuePair};
-use alvr_session::{ClientConnectionDesc, SessionDesc, Settings};
+use alvr_packets::{AudioDevicesList, ClientListAction, PathSegment, PathValuePair};
+use alvr_session::{ClientConnectionConfig, ConnectionState, SessionConfig, Settings};
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde_json as json;
 use std::{
@@ -18,28 +21,29 @@ use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
-use wgpu::AdapterInfo;
 
-fn save_session(session: &SessionDesc, path: &Path) -> StrResult {
-    fs::write(path, json::to_string_pretty(session).map_err(err!())?).map_err(err!())
+fn save_session(session: &SessionConfig, path: &Path) -> Result<()> {
+    fs::write(path, json::to_string_pretty(session)?)?;
+
+    Ok(())
 }
 
-// SessionDesc wrapper that saves settings.json and session.json on destruction.
+// SessionConfig wrapper that saves session.json on destruction.
 pub struct SessionLock<'a> {
-    session_desc: &'a mut SessionDesc,
+    session_desc: &'a mut SessionConfig,
     session_path: &'a Path,
     settings: &'a mut Settings,
 }
 
 impl Deref for SessionLock<'_> {
-    type Target = SessionDesc;
-    fn deref(&self) -> &SessionDesc {
+    type Target = SessionConfig;
+    fn deref(&self) -> &SessionConfig {
         self.session_desc
     }
 }
 
 impl DerefMut for SessionLock<'_> {
-    fn deref_mut(&mut self) -> &mut SessionDesc {
+    fn deref_mut(&mut self) -> &mut SessionConfig {
         self.session_desc
     }
 }
@@ -58,10 +62,9 @@ impl Drop for SessionLock<'_> {
 // fixme: the dashboard is doing this wrong because it is holding its own session state. If read and
 // write need to happen on separate threads, a critical region should be implemented.
 pub struct ServerDataManager {
-    session: SessionDesc,
+    session: SessionConfig,
     settings: Settings,
     session_path: PathBuf,
-    gpu_infos: Vec<AdapterInfo>,
 }
 
 impl ServerDataManager {
@@ -70,31 +73,18 @@ impl ServerDataManager {
         fs::create_dir_all(config_dir).ok();
         let session_desc = Self::load_session(session_path, config_dir);
 
-        let vk_adapters: Vec<wgpu::Adapter> = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            dx12_shader_compiler: Default::default(),
-        })
-        .enumerate_adapters(wgpu::Backends::VULKAN)
-        .collect();
-
-        let gpu_infos = vk_adapters
-            .iter()
-            .map(|adapter| adapter.get_info())
-            .collect();
-
         Self {
             session: session_desc.clone(),
             settings: session_desc.to_settings(),
             session_path: session_path.to_owned(),
-            gpu_infos,
         }
     }
 
-    fn load_session(session_path: &Path, config_dir: &Path) -> SessionDesc {
+    fn load_session(session_path: &Path, config_dir: &Path) -> SessionConfig {
         let session_string = fs::read_to_string(session_path).unwrap_or_default();
 
         if session_string.is_empty() {
-            return SessionDesc::default();
+            return SessionConfig::default();
         }
 
         let session_json = json::from_str::<json::Value>(&session_string)
@@ -111,12 +101,12 @@ impl ServerDataManager {
 
         if session_json.is_null() {
             fs::write(config_dir.join("session_invalid.json"), &session_string).ok();
-            return SessionDesc::default();
+            return SessionConfig::default();
         }
 
         json::from_value(session_json.clone()).unwrap_or_else(|_| {
             fs::write(config_dir.join("session_old.json"), &session_string).ok();
-            let mut session_desc = SessionDesc::default();
+            let mut session_desc = SessionConfig::default();
             match session_desc.merge_from_json(&session_json) {
                 Ok(_) => info!(
                     "{} {}",
@@ -138,7 +128,7 @@ impl ServerDataManager {
     }
 
     // prefer settings()
-    pub fn session(&self) -> &SessionDesc {
+    pub fn session(&self) -> &SessionConfig {
         &self.session
     }
 
@@ -155,7 +145,7 @@ impl ServerDataManager {
     }
 
     // Note: "value" can be any session subtree, in json format.
-    pub fn set_values(&mut self, descs: Vec<PathValuePair>) -> StrResult {
+    pub fn set_values(&mut self, descs: Vec<PathValuePair>) -> Result<()> {
         let mut session_json = serde_json::to_value(self.session.clone()).unwrap();
 
         for desc in descs {
@@ -166,22 +156,14 @@ impl ServerDataManager {
                         if let Some(name) = session_ref.get_mut(name) {
                             name
                         } else {
-                            return fmt_e!(
-                                "From path {:?}: segment \"{}\" not found",
-                                desc.path,
-                                name
-                            );
+                            bail!("From path {:?}: segment \"{name}\" not found", desc.path);
                         }
                     }
                     PathSegment::Index(index) => {
                         if let Some(index) = session_ref.get_mut(index) {
                             index
                         } else {
-                            return fmt_e!(
-                                "From path {:?}: segment [{}] not found",
-                                desc.path,
-                                index
-                            );
+                            bail!("From path {:?}: segment [{index}] not found", desc.path);
                         }
                     }
                 };
@@ -190,7 +172,7 @@ impl ServerDataManager {
         }
 
         // session_json has been updated
-        self.session = serde_json::from_value(session_json).map_err(err!())?;
+        self.session = serde_json::from_value(session_json)?;
         self.settings = self.session.to_settings();
 
         save_session(&self.session, &self.session_path).unwrap();
@@ -199,7 +181,7 @@ impl ServerDataManager {
         Ok(())
     }
 
-    pub fn client_list(&self) -> &HashMap<String, ClientConnectionDesc> {
+    pub fn client_list(&self) -> &HashMap<String, ClientConnectionConfig> {
         &self.session.client_connections
     }
 
@@ -215,11 +197,12 @@ impl ServerDataManager {
                 manual_ips,
             } => {
                 if let Entry::Vacant(new_entry) = maybe_client_entry {
-                    let client_connection_desc = ClientConnectionDesc {
-                        trusted,
+                    let client_connection_desc = ClientConnectionConfig {
+                        display_name: "Unknown".into(),
                         current_ip: None,
                         manual_ips: manual_ips.into_iter().collect(),
-                        display_name: "Unknown".into(),
+                        trusted,
+                        connection_state: ConnectionState::Disconnected,
                     };
                     new_entry.insert(client_connection_desc);
 
@@ -263,6 +246,15 @@ impl ServerDataManager {
                     }
                 }
             }
+            ClientListAction::SetConnectionState(state) => {
+                if let Entry::Occupied(mut entry) = maybe_client_entry {
+                    if entry.get().connection_state != state {
+                        entry.get_mut().connection_state = state;
+
+                        updated = true;
+                    }
+                }
+            }
         }
 
         if updated {
@@ -273,48 +265,50 @@ impl ServerDataManager {
         }
     }
 
-    pub fn get_gpu_vendors(&self) -> Vec<GpuVendor> {
-        return self
-            .gpu_infos
-            .iter()
-            .map(|adapter_info| match adapter_info.vendor {
-                0x10de => GpuVendor::Nvidia,
-                0x1002 => GpuVendor::Amd,
-                _ => GpuVendor::Other,
-            })
-            .collect();
+    pub fn client_hostnames(&self) -> Vec<String> {
+        self.session.client_connections.keys().cloned().collect()
     }
 
-    pub fn get_gpu_names(&self) -> Vec<String> {
-        return self
-            .gpu_infos
-            .iter()
-            .map(|adapter_info| adapter_info.name.clone())
-            .collect();
+    // Run at the start of dashboard or server
+    pub fn clean_client_list(&mut self) {
+        let connections = self.client_list().clone();
+        for (hostname, connection) in connections {
+            if connection.trusted {
+                self.update_client_list(
+                    hostname,
+                    ClientListAction::SetConnectionState(ConnectionState::Disconnected),
+                )
+            } else {
+                self.update_client_list(hostname, ClientListAction::RemoveEntry);
+            }
+        }
+
+        for hostname in self.client_hostnames() {
+            self.update_client_list(hostname.clone(), ClientListAction::UpdateCurrentIp(None));
+        }
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-    pub fn get_audio_devices_list(&self) -> StrResult<AudioDevicesList> {
+    pub fn get_audio_devices_list(&self) -> Result<AudioDevicesList> {
         #[cfg(target_os = "linux")]
         let host = match self.session.to_settings().audio.linux_backend {
-            alvr_session::LinuxAudioBackend::Alsa => cpal::host_from_id(cpal::HostId::Alsa),
-            alvr_session::LinuxAudioBackend::Jack => cpal::host_from_id(cpal::HostId::Jack),
-        }
-        .map_err(err!())?;
+            alvr_session::LinuxAudioBackend::Alsa => cpal::host_from_id(cpal::HostId::Alsa)?,
+            alvr_session::LinuxAudioBackend::Jack => cpal::host_from_id(cpal::HostId::Jack)?,
+        };
         #[cfg(not(target_os = "linux"))]
         let host = cpal::default_host();
 
         let output = host
-            .output_devices()
-            .map_err(err!())?
+            .output_devices()?
             .filter_map(|d| d.name().ok())
             .collect::<Vec<_>>();
         let input = host
-            .input_devices()
-            .map_err(err!())?
+            .input_devices()?
             .filter_map(|d| d.name().ok())
             .collect::<Vec<_>>();
 
         Ok(AudioDevicesList { output, input })
     }
 }
+
+pub fn prepare_client_list() {}

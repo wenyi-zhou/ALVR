@@ -1,7 +1,7 @@
 #![allow(unused_variables)]
 
 use alvr_common::{glam::UVec2, Fov, Pose};
-use alvr_session::FoveatedRenderingDesc;
+use alvr_session::FoveatedRenderingConfig;
 use glyph_brush_layout::{
     ab_glyph::{Font, FontRef, ScaleFont},
     FontId, GlyphPositioner, HorizontalAlign, Layout, SectionGeometry, SectionText, VerticalAlign,
@@ -70,7 +70,8 @@ pub fn pause() {
 pub fn start_stream(
     view_resolution: UVec2,
     swapchain_textures: [Vec<u32>; 2],
-    foveated_rendering: Option<FoveatedRenderingDesc>,
+    foveated_rendering: Option<FoveatedRenderingConfig>,
+    enable_srgb_correction: bool,
 ) {
     #[cfg(target_os = "android")]
     unsafe {
@@ -107,6 +108,7 @@ pub fn start_stream(
                 .as_ref()
                 .map(|f| f.edge_ratio_y)
                 .unwrap_or_default(),
+            enableSrgbCorrection: enable_srgb_correction as u32,
         };
 
         streamStartNative(config);

@@ -47,17 +47,14 @@ impl Control {
 
         let session_switch_mut = session_fragment.as_object_mut().unwrap();
 
-        // todo: can this be written better?
-        let set_mut = if let json::Value::Bool(set) = &mut session_switch_mut["set"] {
-            set
-        } else {
+        let json::Value::Bool(set_mut) = &mut session_switch_mut["set"] else {
             unreachable!()
         };
 
         let mut request = None;
 
         fn get_request(nesting_info: &NestingInfo, enabled: bool) -> Option<PathValuePair> {
-            super::set_single_value(nesting_info, "set".into(), json::Value::Bool(enabled))
+            super::get_single_value(nesting_info, "set".into(), json::Value::Bool(enabled))
         }
 
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {

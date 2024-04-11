@@ -106,7 +106,7 @@ extern "C" void (*LogInfo)(const char *stringPtr);
 extern "C" void (*LogDebug)(const char *stringPtr);
 extern "C" void (*LogPeriodically)(const char *tag, const char *stringPtr);
 extern "C" void (*DriverReadyIdle)(bool setDefaultChaprone);
-extern "C" void (*InitializeDecoder)(const unsigned char *configBuffer, int len, int codec);
+extern "C" void (*SetVideoConfigNals)(const unsigned char *configBuffer, int len, int codec);
 extern "C" void (*VideoSend)(unsigned long long targetTimestampNs,
                              unsigned char *buf,
                              int len,
@@ -119,10 +119,10 @@ extern "C" void (*ShutdownRuntime)();
 extern "C" unsigned long long (*PathStringToHash)(const char *path);
 extern "C" void (*ReportPresent)(unsigned long long timestamp_ns, unsigned long long offset_ns);
 extern "C" void (*ReportComposed)(unsigned long long timestamp_ns, unsigned long long offset_ns);
-extern "C" void (*ReportEncoded)(unsigned long long timestamp_ns);
 extern "C" FfiDynamicEncoderParams (*GetDynamicEncoderParams)();
 extern "C" unsigned long long (*GetSerialNumber)(unsigned long long deviceID, char *outString);
 extern "C" void (*SetOpenvrProps)(unsigned long long deviceID);
+extern "C" void (*RegisterButtons)(unsigned long long deviceID);
 extern "C" void (*WaitForVSync)();
 
 extern "C" void *CppEntryPoint(const char *pInterfaceName, int *pReturnCode);
@@ -141,13 +141,17 @@ extern "C" void VideoErrorReportReceive();
 extern "C" void ShutdownSteamvr();
 
 extern "C" void SetOpenvrProperty(unsigned long long deviceID, FfiOpenvrProperty prop);
+extern "C" void RegisterButton(unsigned long long buttonID);
 extern "C" void SetChaperone(float areaWidth, float areaHeight);
 extern "C" void SetViewsConfig(FfiViewsConfig config);
 extern "C" void SetBattery(unsigned long long deviceID, float gauge_value, bool is_plugged);
-extern "C" void SetButton(unsigned long long path, FfiButtonValue value);
+extern "C" void SetButton(unsigned long long buttonID, FfiButtonValue value);
 
 extern "C" void CaptureFrame();
 
 // NalParsing.cpp
 void ParseFrameNals(
     int codec, unsigned char *buf, int len, unsigned long long targetTimestampNs, bool isIdr);
+
+// CrashHandler.cpp
+void HookCrashHandler();

@@ -183,20 +183,22 @@ void (*LogInfo)(const char *stringPtr);
 void (*LogDebug)(const char *stringPtr);
 void (*LogPeriodically)(const char *tag, const char *stringPtr);
 void (*DriverReadyIdle)(bool setDefaultChaprone);
-void (*InitializeDecoder)(const unsigned char *configBuffer, int len, int codec);
+void (*SetVideoConfigNals)(const unsigned char *configBuffer, int len, int codec);
 void (*VideoSend)(unsigned long long targetTimestampNs, unsigned char *buf, int len, bool isIdr);
 void (*HapticsSend)(unsigned long long path, float duration_s, float frequency, float amplitude);
 void (*ShutdownRuntime)();
 unsigned long long (*PathStringToHash)(const char *path);
 void (*ReportPresent)(unsigned long long timestamp_ns, unsigned long long offset_ns);
 void (*ReportComposed)(unsigned long long timestamp_ns, unsigned long long offset_ns);
-void (*ReportEncoded)(unsigned long long timestamp_ns);
 FfiDynamicEncoderParams (*GetDynamicEncoderParams)();
 unsigned long long (*GetSerialNumber)(unsigned long long deviceID, char *outString);
 void (*SetOpenvrProps)(unsigned long long deviceID);
+void (*RegisterButtons)(unsigned long long deviceID);
 void (*WaitForVSync)();
 
 void *CppEntryPoint(const char *interface_name, int *return_code) {
+    HookCrashHandler();
+
     // Initialize path constants
     init_paths();
 
@@ -279,6 +281,17 @@ void SetOpenvrProperty(unsigned long long deviceID, FfiOpenvrProperty prop) {
     }
 }
 
+void RegisterButton(unsigned long long buttonID) {
+    if (g_driver_provider.left_controller &&
+        LEFT_CONTROLLER_BUTTON_MAPPING.find(buttonID) != LEFT_CONTROLLER_BUTTON_MAPPING.end()) {
+        g_driver_provider.left_controller->RegisterButton(buttonID);
+    } else if (g_driver_provider.right_controller &&
+               RIGHT_CONTROLLER_BUTTON_MAPPING.find(buttonID) !=
+                   RIGHT_CONTROLLER_BUTTON_MAPPING.end()) {
+        g_driver_provider.right_controller->RegisterButton(buttonID);
+    }
+}
+
 void SetViewsConfig(FfiViewsConfig config) {
     if (g_driver_provider.hmd) {
         g_driver_provider.hmd->SetViewsConfig(config);
@@ -296,16 +309,14 @@ void SetBattery(unsigned long long deviceID, float gauge_value, bool is_plugged)
     }
 }
 
-void SetButton(unsigned long long path, FfiButtonValue value) {
+void SetButton(unsigned long long buttonID, FfiButtonValue value) {
     if (g_driver_provider.left_controller &&
-        std::find(LEFT_CONTROLLER_BUTTON_IDS.begin(), LEFT_CONTROLLER_BUTTON_IDS.end(), path) !=
-            LEFT_CONTROLLER_BUTTON_IDS.end()) {
-        g_driver_provider.left_controller->SetButton(path, value);
+        LEFT_CONTROLLER_BUTTON_MAPPING.find(buttonID) != LEFT_CONTROLLER_BUTTON_MAPPING.end()) {
+        g_driver_provider.left_controller->SetButton(buttonID, value);
     } else if (g_driver_provider.right_controller &&
-               std::find(RIGHT_CONTROLLER_BUTTON_IDS.begin(),
-                         RIGHT_CONTROLLER_BUTTON_IDS.end(),
-                         path) != RIGHT_CONTROLLER_BUTTON_IDS.end()) {
-        g_driver_provider.right_controller->SetButton(path, value);
+               RIGHT_CONTROLLER_BUTTON_MAPPING.find(buttonID) !=
+                   RIGHT_CONTROLLER_BUTTON_MAPPING.end()) {
+        g_driver_provider.right_controller->SetButton(buttonID, value);
     }
 }
 

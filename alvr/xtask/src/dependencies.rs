@@ -20,7 +20,6 @@ pub fn prepare_x264_windows() {
     let deps_dir = afs::deps_dir();
 
     command::download_and_extract_zip(
-        &sh,
         &format!(
             "{}/{VERSION}.r{REVISION}/libx264_{VERSION}.r{REVISION}_msvc16.zip",
             "https://github.com/ShiftMediaProject/x264/releases/download",
@@ -56,11 +55,8 @@ Cflags: -I${{includedir}}
 }
 
 pub fn prepare_ffmpeg_windows() {
-    let sh = Shell::new().unwrap();
-
     let download_path = afs::deps_dir().join("windows");
     command::download_and_extract_zip(
-        &sh,
         &format!(
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/{}",
             "ffmpeg-n5.1-latest-win64-gpl-shared-5.1.zip"
@@ -103,21 +99,19 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
 
     let download_path = afs::deps_dir().join("linux");
     command::download_and_extract_zip(
-        &sh,
-        "https://codeload.github.com/FFmpeg/FFmpeg/zip/n6.1.1",
+        "https://codeload.github.com/FFmpeg/FFmpeg/zip/n6.0",
         &download_path,
     )
     .unwrap();
 
     let final_path = download_path.join("ffmpeg");
 
-    fs::rename(download_path.join("FFmpeg-n6.1.1"), &final_path).unwrap();
+    fs::rename(download_path.join("FFmpeg-n6.0"), &final_path).unwrap();
 
     let flags = [
         "--enable-gpl",
         "--enable-version3",
         "--enable-static",
-        "--enable-shared",
         "--disable-programs",
         "--disable-doc",
         "--disable-avdevice",
@@ -126,7 +120,6 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
         "--disable-swscale",
         "--disable-postproc",
         "--disable-network",
-        "--enable-lto",
         "--disable-everything",
         "--enable-encoder=h264_vaapi",
         "--enable-encoder=hevc_vaapi",
@@ -146,6 +139,10 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
 
     let _push_guard = sh.push_dir(final_path);
     let _env_vars = sh.push_env("LDSOFLAGS", config_vars);
+
+    // Patches ffmpeg for workarounds and patches that have yet to be unstreamed
+    let ffmpeg_command = "for p in ../../../alvr/xtask/patches/*; do patch -p1 < $p; done";
+    cmd!(sh, "bash -c {ffmpeg_command}").run().unwrap();
 
     if nvenc_flag {
         /*
@@ -179,8 +176,6 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
                 "--enable-nonfree",
                 "--enable-cuda-nvcc",
                 "--enable-libnpp",
-                "--enable-hwaccel=h264_nvenc",
-                "--enable-hwaccel=hevc_nvenc",
                 "--nvccflags=\"-gencode arch=compute_52,code=sm_52 -O2\"",
                 &format!("--extra-cflags=\"{include_flags}\""),
                 &format!("--extra-ldflags=\"{link_flags}\""),
@@ -200,82 +195,58 @@ pub fn build_ffmpeg_linux(nvenc_flag: bool) {
             .unwrap();
     }
 
-    // Patches ffmpeg for workarounds and patches that have yet to be unstreamed
-    let ffmpeg_command = "for p in ../../../patches/*; do patch -p1 < $p; done";
-    cmd!(sh, "bash -c {ffmpeg_command}").run().unwrap();
-
     let nproc = cmd!(sh, "nproc").read().unwrap();
     cmd!(sh, "make -j{nproc}").run().unwrap();
     cmd!(sh, "make install").run().unwrap();
 }
 
 fn get_android_openxr_loaders() {
-    let sh = Shell::new().unwrap();
+    fn get_openxr_loader(name: &str, url: &str, source_dir: &str) {
+        let temp_dir = afs::build_dir().join("temp_download");
+        let destination_dir = afs::deps_dir().join("android_openxr/arm64-v8a");
+        fs::create_dir_all(&destination_dir).unwrap();
 
-    let destination_dir = afs::deps_dir().join("android_openxr/arm64-v8a");
-    fs::create_dir_all(&destination_dir).unwrap();
+        command::download_and_extract_zip(url, &temp_dir).unwrap();
+        fs::copy(
+            temp_dir.join(source_dir).join("libopenxr_loader.so"),
+            destination_dir.join(format!("libopenxr_loader_{name}.so")),
+        )
+        .unwrap();
+        fs::remove_dir_all(&temp_dir).ok();
+    }
 
-    let temp_dir = afs::build_dir().join("temp_download");
-
-    // Generic
-    command::download_and_extract_zip(
-        &sh,
+    get_openxr_loader(
+        "generic",
         &format!(
             "https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/{}",
             "release-1.0.27/openxr_loader_for_android-1.0.27.aar",
         ),
-        &temp_dir,
-    )
-    .unwrap();
-    fs::copy(
-        temp_dir.join("prefab/modules/openxr_loader/libs/android.arm64-v8a/libopenxr_loader.so"),
-        destination_dir.join("libopenxr_loader.so"),
-    )
-    .unwrap();
-    fs::remove_dir_all(&temp_dir).ok();
+        "prefab/modules/openxr_loader/libs/android.arm64-v8a",
+    );
 
-    // Quest
-    command::download_and_extract_zip(
-        &sh,
+    get_openxr_loader(
+        "quest",
         "https://securecdn.oculus.com/binaries/download/?id=6316350341736833", // version 53
-        &temp_dir,
-    )
-    .unwrap();
-    fs::copy(
-        temp_dir.join("OpenXR/Libs/Android/arm64-v8a/Release/libopenxr_loader.so"),
-        destination_dir.join("libopenxr_loader_quest.so"),
-    )
-    .unwrap();
-    fs::remove_dir_all(&temp_dir).ok();
+        "OpenXR/Libs/Android/arm64-v8a/Release",
+    );
 
-    // Pico
-    command::download_and_extract_zip(
-        &sh,
+    get_openxr_loader(
+        "pico",
         "https://sdk.picovr.com/developer-platform/sdk/PICO_OpenXR_SDK_220.zip",
-        &temp_dir,
-    )
-    .unwrap();
-    fs::copy(
-        temp_dir.join("libs/android.arm64-v8a/libopenxr_loader.so"),
-        destination_dir.join("libopenxr_loader_pico.so"),
-    )
-    .unwrap();
-    fs::remove_dir_all(&temp_dir).ok();
+        "libs/android.arm64-v8a",
+    );
 
-    // Yvr
-    command::download_and_extract_zip(
-        &sh,
+    get_openxr_loader(
+        "yvr",
         "https://developer.yvrdream.com/yvrdoc/sdk/openxr/yvr_openxr_mobile_sdk_1.0.0.zip",
-        &temp_dir,
-    )
-    .unwrap();
-    fs::copy(
-        temp_dir
-            .join("yvr_openxr_mobile_sdk_1.0.0/OpenXR/Libs/Android/arm64-v8a/libopenxr_loader.so"),
-        destination_dir.join("libopenxr_loader_yvr.so"),
-    )
-    .unwrap();
-    fs::remove_dir_all(temp_dir).ok();
+        "yvr_openxr_mobile_sdk_1.0.0/OpenXR/Libs/Android/arm64-v8a",
+    );
+
+    get_openxr_loader(
+        "lynx",
+        "https://portal.lynx-r.com/downloads/download/16", // version 1.0.0
+        "jni/arm64-v8a",
+    );
 }
 
 pub fn build_android_deps(skip_admin_priv: bool) {

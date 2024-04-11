@@ -3,14 +3,15 @@ use crate::{
     ClientCoreEvent,
 };
 use alvr_common::{
+    debug, error,
     glam::{Quat, UVec2, Vec2, Vec3},
+    info,
     once_cell::sync::Lazy,
     parking_lot::Mutex,
-    prelude::*,
-    DeviceMotion, Fov, Pose,
+    warn, DeviceMotion, Fov, Pose,
 };
 use alvr_packets::{ButtonEntry, ButtonValue, Tracking};
-use alvr_session::{CodecType, FoveatedRenderingDesc};
+use alvr_session::{CodecType, FoveatedRenderingConfig};
 use std::{
     collections::VecDeque,
     ffi::{c_char, c_void, CStr, CString},
@@ -157,8 +158,11 @@ pub unsafe extern "C" fn alvr_initialize(
 }
 
 #[no_mangle]
-pub extern "C" fn alvr_destroy() {
+pub unsafe extern "C" fn alvr_destroy() {
     crate::destroy();
+
+    #[cfg(target_os = "android")]
+    ndk_context::release_android_context();
 }
 
 #[no_mangle]
@@ -522,7 +526,7 @@ pub unsafe extern "C" fn alvr_start_stream_opengl(config: AlvrStreamConfig) {
     let view_resolution = UVec2::new(config.view_resolution_width, config.view_resolution_height);
     let swapchain_textures =
         convert_swapchain_array(config.swapchain_textures, config.swapchain_length);
-    let foveated_rendering = config.enable_foveation.then_some(FoveatedRenderingDesc {
+    let foveated_rendering = config.enable_foveation.then_some(FoveatedRenderingConfig {
         center_size_x: config.foveation_center_size_x,
         center_size_y: config.foveation_center_size_y,
         center_shift_x: config.foveation_center_shift_x,
@@ -531,7 +535,12 @@ pub unsafe extern "C" fn alvr_start_stream_opengl(config: AlvrStreamConfig) {
         edge_ratio_y: config.foveation_edge_ratio_y,
     });
 
-    opengl::start_stream(view_resolution, swapchain_textures, foveated_rendering);
+    opengl::start_stream(
+        view_resolution,
+        swapchain_textures,
+        foveated_rendering,
+        true,
+    );
 }
 
 #[no_mangle]

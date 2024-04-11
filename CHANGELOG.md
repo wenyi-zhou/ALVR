@@ -1,5 +1,77 @@
 # Changelog
 
+## v20.4.1
+
+* Fix inverted `Enable skeleton` switch
+* Add `Only touch` gestures option
+
+## v20.4.0
+
+* Full hand tracking gestures support, with joystick (by @barnabwhy #1794)
+* Fully remappable controller buttons (by @zarik5 #1817)
+* Custom controller profile (by @zarik5)
+* Fix Nvidia support on Linux (by @Killrmemz #1830)
+
+## v20.3.1
+
+* Fix some controller buttons not working
+* Fix changing controller emulation profile not triggering a SteamVR restart
+* Add back Rift S controller emulation profile
+
+## v20.3.0
+
+* Add Lynx R1 headset support (by @zarik5 #1823)
+  * Currently there is an issue with hand tracking which is being investigated
+* Make settings sections collapsible (by @zarik5)
+* Other UI tweaks (by @zarik5)
+* *Actually* fix controller freeze (by @zarik5)
+* Fix Pico controller buttons (by @zarik5 @galister @Meister1593 #1820)
+* Fix bitrate hikes when "Adapt to framerate" is enabled (by @zarik5)
+* Fix Nvenc encoder on Linux (by @Killrmemz #1824)
+* Timeout connection if lingering (by @zarik5)
+* Fix warmstart crash on client (by @ShootingKing-AM #1813)
+
+## v20.2.1
+
+* Fix VRCFaceTracking mode panicing.
+* (Potential) Fix for dashboard crash on Wayland.
+
+## v20.2.0
+
+* Add Flatpak build (by @CharlieQLe #1683 #1724 #1735 #1742, @Meister1593 #1769)
+* Finish VRCFaceTracking support (by @zarik5)
+  * You can download the ALVR Module from the VRCFaceTracking app itself.
+  * Only supports the Quest Pro at the moment.
+* New more performant sockets implementation (by @zarik5)
+  * Zero copy + zero allocations, and provides better packet prioritization.
+* Avoid controller freezing during high latency (by @zarik5)
+* Add message popups on Linux (disabled on the appimage build) (by @zarik5 #1711)
+* Show backtrace on unhandled exceptions (Windows only) (by @zarik5)
+  * Previously these would make SteamVR hard crash without any useful log
+* Optionally show full backtraces for logs (by @zarik5)
+* Add option to select client log level (by zarik5)
+* Make Log tab stick to bottom (by @zarik5)
+* Encoder fixes on Linux (by @nowrep #1751 #1753 #1767 #1768 #1796, @Vixea #1805)
+* Use Constant bitrate mode by default
+* Support rolling video recording (by @zarik5)
+* Fix OpenGL crash on the client (by @ShootingKing-AM #1801)
+* Fix white dashboard bug on Linux (by @zarik5)
+
+## v20.1.0
+
+* Fix firewall rules on Windows (by @zarik5)
+* Fix firewall rules on linux for the tar.gz (by @Vixea #1675)
+* Add bitrate graph (by @zarik5 #1689)
+* Add encoder latency limiter (by @zarik5 #1678)
+* Fix network latency limiter (by @zarik5)
+* Fix image corruption on AMD (by @zarik5 #1681)
+* Fix dashboard audio dropdowns on Linux (by @zarik5)
+* Add connection status for clients (by @zarik5 #1688)
+* Fix HMD plugged status (by @zarik5)
+* Fix crash on some Unreal Engine 5 games (by @deiteris #1685)
+* Add option to disable game render optimization (by @zarik5)
+* Add separate history size for bitrate (by @zarik5)
+
 ## v20.0.0
 
 * New OpenXR-based client, add support for Vive Focus 3/XR Elite, Pico 4/Neo 3 and YVR 1/2. Worked on by:

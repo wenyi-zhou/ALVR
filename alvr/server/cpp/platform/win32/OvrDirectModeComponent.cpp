@@ -20,19 +20,23 @@ void OvrDirectModeComponent::CreateSwapTextureSet(uint32_t unPid, const SwapText
 	//HRESULT hr = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_HARDWARE, NULL, creationFlags, NULL, 0, D3D11_SDK_VERSION, &pDevice, &eFeatureLevel, &pContext);
 
 	D3D11_TEXTURE2D_DESC SharedTextureDesc = {};
+	DXGI_FORMAT format = (DXGI_FORMAT)pSwapTextureSetDesc->nFormat;
+	SharedTextureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+	if (format == DXGI_FORMAT_R32G8X24_TYPELESS || format == DXGI_FORMAT_R32_TYPELESS) {
+		SharedTextureDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+	}
 	SharedTextureDesc.ArraySize = 1;
 	SharedTextureDesc.MipLevels = 1;
 	SharedTextureDesc.SampleDesc.Count = pSwapTextureSetDesc->nSampleCount;
 	SharedTextureDesc.SampleDesc.Quality = 0;
 	SharedTextureDesc.Usage = D3D11_USAGE_DEFAULT;
-	SharedTextureDesc.Format = (DXGI_FORMAT)pSwapTextureSetDesc->nFormat;
+	SharedTextureDesc.Format = format;
 
 	// Some(or all?) applications request larger texture than we specified in GetRecommendedRenderTargetSize.
 	// But, we must create textures in requested size to prevent cropped output. And then we must shrink texture to H.264 movie size.
 	SharedTextureDesc.Width = pSwapTextureSetDesc->nWidth;
 	SharedTextureDesc.Height = pSwapTextureSetDesc->nHeight;
 
-	SharedTextureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 	//SharedTextureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 	SharedTextureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
@@ -42,12 +46,28 @@ void OvrDirectModeComponent::CreateSwapTextureSet(uint32_t unPid, const SwapText
 	for (int i = 0; i < 3; i++) {
 		HRESULT hr = m_pD3DRender->GetDevice()->CreateTexture2D(&SharedTextureDesc, NULL, &processResource->textures[i]);
 		//LogDriver("texture%d %p res:%d %s", i, texture[i], hr, GetDxErrorStr(hr).c_str());
+		if (FAILED(hr)) {
+			Error("CreateSwapTextureSet CreateTexture2D %p %ls\n", hr, GetErrorStr(hr).c_str());
+			delete processResource;
+			break;
+		}
 
 		IDXGIResource* pResource;
 		hr = processResource->textures[i]->QueryInterface(__uuidof(IDXGIResource), (void**)&pResource);
+		if (FAILED(hr)) {
+			Error("CreateSwapTextureSet QueryInterface %p %ls\n", hr, GetErrorStr(hr).c_str());
+			delete processResource;
+			break;
+		}
 		//LogDriver("QueryInterface %p res:%d %s", pResource, hr, GetDxErrorStr(hr).c_str());
 
 		hr = pResource->GetSharedHandle(&processResource->sharedHandles[i]);
+		if (FAILED(hr)) {
+			Error("CreateSwapTextureSet GetSharedHandle %p %ls\n", hr, GetErrorStr(hr).c_str());
+			delete processResource;
+			pResource->Release();
+			break;
+		}
 		//LogDriver("GetSharedHandle %p res:%d %s", processResource->sharedHandles[i], hr, GetDxErrorStr(hr).c_str());
 
 		m_handleMap.insert(std::make_pair(processResource->sharedHandles[i], std::make_pair(processResource, i)));
@@ -111,6 +131,8 @@ void OvrDirectModeComponent::GetNextSwapTextureSetIndex(vr::SharedTextureHandle_
 * using CreateSwapTextureSet and should be alternated per frame.  Call Present once all layers have been submitted. */
 void OvrDirectModeComponent::SubmitLayer(const SubmitLayerPerEye_t(&perEye)[2])
 {
+	m_presentMutex.lock();
+
 	auto pPose = &perEye[0].mHmdPose; // TODO: are both poses the same? Name HMD suggests yes.
 
 	if (m_submitLayer == 0) {
@@ -145,11 +167,15 @@ void OvrDirectModeComponent::SubmitLayer(const SubmitLayerPerEye_t(&perEye)[2])
 	}
 
 	//CopyTexture();
+
+	m_presentMutex.unlock();
 }
 
 /** Submits queued layers for display. */
 void OvrDirectModeComponent::Present(vr::SharedTextureHandle_t syncTexture)
 {
+	m_presentMutex.lock();
+
 	ReportPresent(m_targetTimestampNs, 0);
 
 	bool useMutex = true;
@@ -168,6 +194,7 @@ void OvrDirectModeComponent::Present(vr::SharedTextureHandle_t syncTexture)
 	if (!pSyncTexture)
 	{
 		Warn("[VDispDvr] SyncTexture is NULL!\n");
+		m_presentMutex.unlock();
 		return;
 	}
 
@@ -183,6 +210,7 @@ void OvrDirectModeComponent::Present(vr::SharedTextureHandle_t syncTexture)
 			{
 				Debug("[VDispDvr] ACQUIRESYNC FAILED!!! hr=%d %p %ls\n", hr, hr, GetErrorStr(hr).c_str());
 				pKeyedMutex->Release();
+				m_presentMutex.unlock();
 				return;
 			}
 		}
@@ -203,6 +231,8 @@ void OvrDirectModeComponent::Present(vr::SharedTextureHandle_t syncTexture)
 	if (m_pEncoder) {
 		m_pEncoder->NewFrameReady();
 	}
+
+	m_presentMutex.unlock();
 }
 
 void OvrDirectModeComponent::PostPresent() {

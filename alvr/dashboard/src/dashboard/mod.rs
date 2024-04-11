@@ -4,14 +4,14 @@ mod components;
 use self::components::{
     ConnectionsTab, LogsTab, NotificationBar, SettingsTab, SetupWizard, SetupWizardRequest,
 };
-use crate::{dashboard::components::StatisticsTab, theme, DataSources};
+use crate::{dashboard::components::StatisticsTab, DataSources};
 use alvr_common::parking_lot::{Condvar, Mutex};
 use alvr_events::EventType;
+use alvr_gui_common::theme;
 use alvr_packets::{PathValuePair, ServerRequest};
-use alvr_session::SessionDesc;
+use alvr_session::SessionConfig;
 use eframe::egui::{
-    self, style::Margin, Align, CentralPanel, Frame, Layout, RichText, ScrollArea, SidePanel,
-    Stroke,
+    self, style::Margin, Align, CentralPanel, Frame, Layout, RichText, SidePanel, Stroke,
 };
 use std::{
     collections::BTreeMap,
@@ -73,12 +73,16 @@ pub struct Dashboard {
     notification_bar: NotificationBar,
     setup_wizard: SetupWizard,
     setup_wizard_open: bool,
-    session: Option<SessionDesc>,
+    session: Option<SessionConfig>,
 }
 
 impl Dashboard {
     pub fn new(creation_context: &eframe::CreationContext<'_>, data_sources: DataSources) -> Self {
-        theme::set_theme(&creation_context.egui_ctx);
+        alvr_gui_common::theme::set_theme(&creation_context.egui_ctx);
+
+        // Audio devices need to be queried early to mitigate buggy/slow hardware queries on Linux.
+        data_sources.request(ServerRequest::GetSession);
+        data_sources.request(ServerRequest::GetAudioDevices);
 
         Self {
             data_sources,
@@ -154,7 +158,7 @@ impl eframe::App for Dashboard {
                 EventType::GraphStatistics(graph_statistics) => self
                     .statistics_tab
                     .update_graph_statistics(graph_statistics),
-                EventType::Statistics(statistics) => {
+                EventType::StatisticsSummary(statistics) => {
                     self.statistics_tab.update_statistics(statistics)
                 }
                 EventType::Session(session) => {
@@ -245,8 +249,6 @@ impl eframe::App for Dashboard {
                     ui.with_layout(
                         Layout::bottom_up(Align::Center).with_cross_justify(true),
                         |ui| {
-                            use eframe::epaint::Color32;
-
                             ui.add_space(5.0);
 
                             if connected_to_server {
@@ -259,12 +261,20 @@ impl eframe::App for Dashboard {
 
                             ui.horizontal(|ui| {
                                 ui.add_space(5.0);
-                                ui.label("Streamer:");
+                                ui.label(RichText::new("SteamVR:").size(13.0));
                                 ui.add_space(-10.0);
                                 if connected_to_server {
-                                    ui.label(RichText::new("Connected").color(Color32::GREEN));
+                                    ui.label(
+                                        RichText::new("Connected")
+                                            .color(theme::OK_GREEN)
+                                            .size(13.0),
+                                    );
                                 } else {
-                                    ui.label(RichText::new("Disconnected").color(Color32::RED));
+                                    ui.label(
+                                        RichText::new("Disconnected")
+                                            .color(theme::KO_RED)
+                                            .size(13.0),
+                                    );
                                 }
                             })
                         },
@@ -283,7 +293,7 @@ impl eframe::App for Dashboard {
                             RichText::new(*self.tab_labels.get(&self.selected_tab).unwrap())
                                 .size(25.0),
                         );
-                        ScrollArea::new([false, true]).show(ui, |ui| match self.selected_tab {
+                        match self.selected_tab {
                             Tab::Connections => {
                                 requests.extend(self.connections_tab.ui(ui, connected_to_server));
                             }
@@ -317,7 +327,7 @@ impl eframe::App for Dashboard {
                                 }
                             }
                             Tab::About => components::about_tab_ui(ui),
-                        })
+                        }
                     })
                 });
         }
